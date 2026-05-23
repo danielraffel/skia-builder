@@ -1070,6 +1070,23 @@ class SkiaBuildScript:
         if sys.platform != "win32" or platform.machine().lower() not in ("arm64", "aarch64"):
             return
 
+        shim_dir = BASE_DIR / "tmp" / "windows-arm64-tools"
+        shim_dir.mkdir(parents=True, exist_ok=True)
+        python3_shim = shim_dir / "python3.cmd"
+        python3_shim.write_text(f'@echo off\r\n"{sys.executable}" %*\r\n')
+        python3_exe_shim = shim_dir / "python3.exe"
+        if not python3_exe_shim.exists():
+            shutil.copy2(sys.executable, python3_exe_shim)
+        os.environ["PATH"] = f"{shim_dir};{os.environ['PATH']}"
+
+        fetch_gn_path = SKIA_SRC_DIR / "bin" / "fetch-gn"
+        if fetch_gn_path.exists():
+            fetch_gn = fetch_gn_path.read_text()
+            patched_fetch_gn = fetch_gn.replace("'arm64': 'arm64'", "'arm64': 'amd64'")
+            if patched_fetch_gn != fetch_gn:
+                fetch_gn_path.write_text(patched_fetch_gn)
+                colored_print("Patched fetch-gn to use Windows amd64 GN on ARM64.", Colors.OKGREEN)
+
         gn_path = SKIA_SRC_DIR / "bin" / "gn.exe"
         if gn_path.exists():
             colored_print("GN binary already exists, skipping download.", Colors.OKBLUE)

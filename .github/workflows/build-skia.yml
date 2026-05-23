@@ -38,34 +38,34 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          - os: macos-15
             platform: mac
             variant: gpu
             arch: "universal"
-          - os: macos-latest
+          - os: macos-15
             platform: mac
             variant: gpu
             arch: "arm64"
-          - os: macos-latest
+          - os: macos-15
             platform: mac
             variant: gpu
             arch: "x86_64"
-          - os: macos-latest
+          - os: macos-15
             platform: ios
             variant: gpu
             arch: "arm64"
             target: "device"
-          - os: macos-latest
+          - os: macos-15
             platform: ios
             variant: gpu
             arch: "arm64,x86_64"
             target: "simulator"
-          - os: macos-latest
+          - os: macos-15
             platform: visionos
             variant: gpu
             arch: "arm64"
             target: "device"
-          - os: macos-latest
+          - os: macos-15
             platform: visionos
             variant: gpu
             arch: "arm64"
@@ -100,11 +100,11 @@ jobs:
           #   variant: gpu
           #   arch: arm64
           # CPU variants
-          # - os: macos-latest
+          # - os: macos-15
           #   platform: mac
           #   variant: cpu
           #   arch: ""
-          # - os: windows-latest
+          # - os: windows-2022
           #   platform: win
           #   variant: cpu
           #   arch: x64
@@ -116,7 +116,7 @@ jobs:
           #   platform: wasm
           #   variant: cpu
           #   arch: ""
-          # - os: macos-latest
+          # - os: macos-15
           #   platform: ios
           #   variant: cpu
           #   arch: ""
@@ -312,7 +312,7 @@ jobs:
   create-xcframework:
     needs: build-skia
     if: ${{ !inputs.skip_release && (inputs.platforms == 'all') }}
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
       - name: Download macOS artifact
         uses: actions/download-artifact@v7

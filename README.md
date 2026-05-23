@@ -89,7 +89,7 @@ The repository includes a GitHub Actions workflow (`.github/workflows/build-skia
 
 | Input | Description | Default |
 |-------|-------------|---------|
-| `skia_branch` | Skia branch to build | `chrome/m144` |
+| `skia_branch` | Skia branch to build | `chrome/m149` |
 | `platforms` | Platforms to build (comma-separated or `all`) | `all` |
 | `skip_release` | Skip creating release | `false` |
 | `test_mode` | Skip build, create dummy files | `false` |
@@ -106,7 +106,7 @@ gh workflow run build-skia.yml -f platforms=mac,ios -f skip_release=true
 gh workflow run build-skia.yml -f platforms=win -f skip_release=true
 
 # Build with a different Skia branch
-gh workflow run build-skia.yml -f skia_branch=chrome/m145
+gh workflow run build-skia.yml -f skia_branch=chrome/m149
 ```
 
 ### Check CI Status
@@ -121,7 +121,7 @@ gh run view <run-id> --log-failed
 If you've already built all platforms, you can create an XCFramework without rebuilding:
 
 ```bash
-gh workflow run create-xcframework.yml -f release_tag=chrome/m144
+gh workflow run create-xcframework.yml -f release_tag=chrome/m149
 ```
 
 This downloads mac, ios, and visionos artifacts from the specified release and creates a combined XCFramework.

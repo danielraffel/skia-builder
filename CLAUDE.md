@@ -94,7 +94,7 @@ This approach was informed by research into:
 The GitHub Actions workflow (`.github/workflows/build-skia.yml`) builds all platforms in parallel and creates releases tagged with the Skia branch name.
 
 **Workflow inputs:**
-- `skia_branch` - Skia branch to build (default: `chrome/m144`)
+- `skia_branch` - Skia branch to build (default: `chrome/m149`)
 - `platforms` - Platforms to build, comma-separated or `all` (default: `all`)
 - `skip_release` - Skip creating release, useful for testing (default: `false`)
 - `test_mode` - Skip actual build, create dummy files (default: `false`)
@@ -108,12 +108,12 @@ gh workflow run build-skia.yml -f platforms=visionos -f skip_release=true
 gh workflow run build-skia.yml -f platforms=mac,ios -f skip_release=true
 
 # Build with different Skia branch
-gh workflow run build-skia.yml -f skia_branch=chrome/m145
+gh workflow run build-skia.yml -f skia_branch=chrome/m149
 
 # Check CI status
 gh run list
 gh run view <run-id> --log-failed
 
 # Create XCFramework from existing release (without rebuilding)
-gh workflow run create-xcframework.yml -f release_tag=chrome/m144
+gh workflow run create-xcframework.yml -f release_tag=chrome/m149
 ```

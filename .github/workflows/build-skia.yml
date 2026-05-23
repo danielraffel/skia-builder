@@ -29,6 +29,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-skia:
     strategy:
@@ -67,12 +70,12 @@ jobs:
             variant: gpu
             arch: "arm64"
             target: "simulator"
-          - os: windows-latest
+          - os: windows-2022
             platform: win
             variant: gpu
             arch: x64
             config: Release
-          - os: windows-latest
+          - os: windows-2022
             platform: win
             variant: gpu
             arch: x64
@@ -137,7 +140,7 @@ jobs:
 
       - name: Checkout repository
         if: steps.check.outputs.should_build == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Free disk space (Linux)
         if: steps.check.outputs.should_build == 'true' && runner.os == 'Linux'
@@ -149,15 +152,37 @@ jobs:
         if: steps.check.outputs.should_build == 'true' && matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libfontconfig1-dev libgl1-mesa-dev libglu1-mesa-dev libx11-xcb-dev libxcb1-dev libxcb-xkb-dev libwayland-dev ninja-build
+          sudo apt-get install -y libfontconfig1-dev libgl1-mesa-dev libglu1-mesa-dev libx11-xcb-dev libxcb1-dev libxcb-xkb-dev libwayland-dev
 
-      - name: Set up Ninja
-        if: steps.check.outputs.should_build == 'true' && matrix.os != 'ubuntu-24.04-arm'
-        uses: seanmiddleditch/gha-setup-ninja@v5
+      - name: Install Ninja
+        if: steps.check.outputs.should_build == 'true'
+        shell: bash
+        run: |
+          if command -v ninja >/dev/null 2>&1; then
+            ninja --version
+            exit 0
+          fi
+
+          case "${{ runner.os }}" in
+            Linux)
+              sudo apt-get update
+              sudo apt-get install -y ninja-build
+              ;;
+            macOS)
+              brew install ninja
+              ;;
+            Windows)
+              choco install ninja --no-progress --yes
+              printf '%s\n' 'C:\ProgramData\chocolatey\bin' >> "$GITHUB_PATH"
+              export PATH="/c/ProgramData/chocolatey/bin:$PATH"
+              ;;
+          esac
+
+          ninja --version
 
       - name: Set up Python
         if: steps.check.outputs.should_build == 'true'
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.x'
 
@@ -197,7 +222,7 @@ jobs:
 
       - name: Cache depot_tools and Skia source
         if: steps.check.outputs.should_build == 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             build/tmp/depot_tools
@@ -273,7 +298,7 @@ jobs:
 
       - name: Upload artifact
         if: steps.check.outputs.should_build == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.archive.outputs.name }}
           path: ${{ steps.archive.outputs.name }}.zip
@@ -290,27 +315,27 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Download macOS artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: skia-build-mac-universal-gpu-release
 
       - name: Download iOS device artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: skia-build-ios-device-arm64-gpu-release
 
       - name: Download iOS simulator artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: skia-build-ios-simulator-arm64-x86_64-gpu-release
 
       - name: Download visionOS device artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: skia-build-visionos-device-arm64-gpu-release
 
       - name: Download visionOS simulator artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: skia-build-visionos-simulator-arm64-gpu-release
 
@@ -384,7 +409,7 @@ jobs:
         run: zip -ry Skia.xcframework.zip Skia.xcframework  # -y preserves symlinks
 
       - name: Upload XCFramework artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: Skia.xcframework
           path: Skia.xcframework.zip
@@ -395,10 +420,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           body: |
             https://raw.githubusercontent.com/google/skia/${{ needs.build-skia.outputs.skia_branch }}/RELEASE_NOTES.md

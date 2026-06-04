@@ -56,19 +56,19 @@ Note: macOS builds target macOS 11+ (Big Sur). This is hardcoded in Skia's `gn/s
 ### Build for macOS universal (arm64 & x86_64 intel)
 
 ```bash
-python3 build-skia.py -config Release -branch chrome/m129 mac
+python3 build-skia.py -config Release -branch chrome/m150 mac
 ```
 
 ### Build for iOS (including x86_64 simulator)
 
 ```bash
-python3 build-skia.py -config Release -branch chrome/m129 ios
+python3 build-skia.py -config Release -branch chrome/m150 ios
 ```
 
 ### Build an XCFramework
 
 ```bash
-python3 build-skia.py -config Release -branch chrome/m129 xcframework
+python3 build-skia.py -config Release -branch chrome/m150 xcframework
 ```
 
 ## Building on Windows 
@@ -78,7 +78,7 @@ On Windows, you need to install LLVM in order to compile Skia with clang, as rec
 LLVM should be installed in `C:\Program Files\LLVM\`
 
 ```bash
-py -3 build-skia.py -config Release -branch chrome/m129 win
+py -3 build-skia.py -config Release -branch chrome/m150 win
 ```
 
 ## CI / GitHub Actions
@@ -89,7 +89,7 @@ The repository includes a GitHub Actions workflow (`.github/workflows/build-skia
 
 | Input | Description | Default |
 |-------|-------------|---------|
-| `skia_branch` | Skia branch to build | `chrome/m149` |
+| `skia_branch` | Skia branch to build | `chrome/m150` |
 | `platforms` | Platforms to build (comma-separated or `all`) | `all` |
 | `skip_release` | Skip creating release | `false` |
 | `test_mode` | Skip build, create dummy files | `false` |
@@ -106,7 +106,7 @@ gh workflow run build-skia.yml -f platforms=mac,ios -f skip_release=true
 gh workflow run build-skia.yml -f platforms=win -f skip_release=true
 
 # Build with a different Skia branch
-gh workflow run build-skia.yml -f skia_branch=chrome/m149
+gh workflow run build-skia.yml -f skia_branch=chrome/m150
 ```
 
 ### Check CI Status
@@ -121,7 +121,7 @@ gh run view <run-id> --log-failed
 If you've already built all platforms, you can create an XCFramework without rebuilding:
 
 ```bash
-gh workflow run create-xcframework.yml -f release_tag=chrome/m149
+gh workflow run create-xcframework.yml -f release_tag=chrome/m150
 ```
 
 This downloads mac, ios, and visionos artifacts from the specified release and creates a combined XCFramework.

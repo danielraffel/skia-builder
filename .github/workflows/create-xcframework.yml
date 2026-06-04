@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Release tag to download artifacts from (e.g., chrome/m149)'
+        description: 'Release tag to download artifacts from (e.g., chrome/m150)'
         required: true
         type: string
       upload_to_release:

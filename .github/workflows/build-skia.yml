@@ -5,10 +5,10 @@ on:
   workflow_dispatch:
     inputs:
       skia_branch:
-        description: 'Skia branch to build (e.g., chrome/m149)'
+        description: 'Skia branch to build (e.g., chrome/m150)'
         required: false
         type: string
-        default: 'chrome/m149'
+        default: 'chrome/m150'
       platforms:
         description: 'Platforms to build (comma-separated, or "all")'
         required: false
@@ -26,7 +26,7 @@ on:
         default: false
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.skia_branch || 'chrome/m149' }}-${{ inputs.platforms || 'all' }}-${{ inputs.skip_release && 'skip-release' || 'release' }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.skia_branch || 'chrome/m150' }}-${{ inputs.platforms || 'all' }}-${{ inputs.skip_release && 'skip-release' || 'release' }}
   cancel-in-progress: false
 
 env:
@@ -125,7 +125,7 @@ jobs:
           #   arch: ""
     runs-on: ${{ matrix.os }}
     env:
-      SKIA_BRANCH: ${{ inputs.skia_branch || 'chrome/m149' }}
+      SKIA_BRANCH: ${{ inputs.skia_branch || 'chrome/m150' }}
     outputs:
       skia_branch: ${{ steps.skia_branch.outputs.skia_branch }}
     steps:

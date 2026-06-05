@@ -241,8 +241,12 @@ jobs:
             macOS)   brew list ccache >/dev/null 2>&1 || brew install ccache ;;
             Windows) choco install ccache -y --no-progress ;;
           esac
+          # skia-builder has MANY matrix cells (mac variants, win, linux, wasm, ios) and
+          # already spends repo cache budget on the source cache, so keep ccache modest
+          # (3G/cell) to stay under GitHub's 10G/repo LRU budget — the cell you iterate
+          # stays warm; others evict harmlessly.
           echo "CCACHE_DIR=$(pwd)/.ccache" >> "$GITHUB_ENV"
-          echo "CCACHE_MAXSIZE=8G" >> "$GITHUB_ENV"
+          echo "CCACHE_MAXSIZE=3G" >> "$GITHUB_ENV"
           echo "CCACHE_COMPILERCHECK=content" >> "$GITHUB_ENV"
       - name: Restore ccache (compiled objects — re-runs recompile only changed TUs)
         if: steps.check.outputs.should_build == 'true'

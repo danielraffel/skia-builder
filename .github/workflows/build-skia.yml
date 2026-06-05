@@ -93,11 +93,11 @@ jobs:
             arch: "wasm32"
             config: Release
 
-          # ARM64 platforms (later)
-          # - os: ubuntu-24.04-arm
-          #   platform: linux
-          #   variant: gpu
-          #   arch: arm64
+          # ARM64 platforms
+          - os: ubuntu-24.04-arm
+            platform: linux
+            variant: gpu
+            arch: arm64
           # - os: windows-11-arm
           #   platform: win
           #   variant: gpu

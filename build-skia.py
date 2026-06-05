@@ -501,6 +501,13 @@ class SkiaBuildScript:
             gn_args += "is_debug = false\n"
             gn_args += "is_official_build = true\n"
 
+        # ccache: cache compiled objects across CI runs so a re-run recompiles only the
+        # TUs that changed — minutes instead of a full Skia+Dawn rebuild. Skia's gn
+        # supports cc_wrapper. Auto-on only when ccache is in PATH (the workflow installs
+        # it); local builds without ccache are unaffected.
+        if shutil.which("ccache"):
+            gn_args += '\ncc_wrapper = "ccache"\n'
+
         if self.platform == "mac":
             gn_args += f"target_cpu = \"{arch}\""
         elif self.platform == "ios":

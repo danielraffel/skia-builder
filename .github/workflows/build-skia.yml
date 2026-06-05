@@ -232,6 +232,28 @@ jobs:
             build/src/skia
           key: ${{ runner.os }}-${{ steps.cache-key.outputs.arch }}-depot_tools-skia-${{ env.SKIA_BRANCH }}-${{ hashFiles('build-skia.py') }}
 
+      - name: Set up ccache (build-skia.py auto-enables cc_wrapper when ccache is in PATH)
+        if: steps.check.outputs.should_build == 'true'
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Linux)   sudo apt-get update -qq && sudo apt-get install -y -qq ccache ;;
+            macOS)   brew list ccache >/dev/null 2>&1 || brew install ccache ;;
+            Windows) choco install ccache -y --no-progress ;;
+          esac
+          echo "CCACHE_DIR=$(pwd)/.ccache" >> "$GITHUB_ENV"
+          echo "CCACHE_MAXSIZE=8G" >> "$GITHUB_ENV"
+          echo "CCACHE_COMPILERCHECK=content" >> "$GITHUB_ENV"
+      - name: Restore ccache (compiled objects — re-runs recompile only changed TUs)
+        if: steps.check.outputs.should_build == 'true'
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-${{ runner.os }}-${{ steps.cache-key.outputs.arch }}-${{ matrix.platform }}-${{ matrix.variant }}-${{ env.SKIA_BRANCH }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ steps.cache-key.outputs.arch }}-${{ matrix.platform }}-${{ matrix.variant }}-${{ env.SKIA_BRANCH }}-
+            ccache-${{ runner.os }}-${{ steps.cache-key.outputs.arch }}-${{ matrix.platform }}-${{ matrix.variant }}-
+
       # - name: Build Skia (Debug)
       #   if: ${{ !inputs.test_mode }}
       #   run: |

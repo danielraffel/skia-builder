@@ -16,7 +16,7 @@ EMSDK_PATH = $(SKIA_SRC_DIR)/third_party/externals/emsdk
 
 HTTP_PORT = 8080
 
-.PHONY: skia-mac skia-ios skia-wasm skia-linux clean example-mac example-wasm serve-wasm skia-xcframework skia-spm example-mac-graphite example-linux-graphite
+.PHONY: skia-mac skia-ios skia-wasm skia-linux clean example-mac example-wasm serve-wasm skia-xcframework skia-spm example-mac-graphite example-linux-graphite test-watch-skia
 
 # Default target
 all: skia-mac example-mac
@@ -53,6 +53,9 @@ serve-wasm: example-wasm
 	source $(EMSDK_PATH)/emsdk_env.sh && \
 	cd $(WASM_EXAMPLE_BUILD_DIR) && \
 	emrun --port $(HTTP_PORT) --browser chrome example.html
+
+test-watch-skia:
+	bash .github/scripts/test-check-skia-update.sh
 
 # Build directories for native graphite examples
 MAC_GRAPHITE_BUILD_DIR = $(shell pwd)/example/build-mac-graphite

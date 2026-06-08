@@ -109,6 +109,32 @@ gh workflow run build-skia.yml -f platforms=win -f skip_release=true
 gh workflow run build-skia.yml -f skia_branch=chrome/m150
 ```
 
+### Automatic Skia Updates
+
+The `Watch Skia` workflow (`.github/workflows/watch-skia.yml`) runs once per day and checks `google/skia` for the latest `chrome/m*` branch. If this repository does not already have a GitHub release tagged with that branch name, it dispatches `build-skia.yml` with `platforms=all` and `skip_release=false`.
+
+You can also run the watcher manually:
+
+```bash
+gh workflow run watch-skia.yml
+```
+
+To verify the watcher without starting the full build matrix, run it in dry-run mode against a branch that exists upstream:
+
+```bash
+# Should report no dispatch when the release already exists
+gh workflow run watch-skia.yml -f skia_branch=chrome/m150 -f dry_run=true
+
+# Should report that a build would be dispatched when the release is missing
+gh workflow run watch-skia.yml -f skia_branch=chrome/m148 -f dry_run=true
+```
+
+The watcher decision logic also has a local fixture test:
+
+```bash
+make test-watch-skia
+```
+
 ### Check CI Status
 
 ```bash

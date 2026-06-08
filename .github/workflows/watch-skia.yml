@@ -1,0 +1,95 @@
+name: Watch Skia
+run-name: Watch Skia
+
+on:
+  schedule:
+    # Skia Chrome milestone branches do not change frequently. Check daily so a
+    # new milestone is picked up without polling GitHub aggressively.
+    - cron: '17 10 * * *'
+  workflow_dispatch:
+    inputs:
+      skia_branch:
+        description: 'Optional Skia branch to check (e.g., chrome/m150); empty checks the latest chrome/m* branch'
+        required: false
+        type: string
+        default: ''
+      dry_run:
+        description: 'Only report whether a build would be dispatched'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: watch-skia
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Check for Skia update
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_REPO: ${{ github.repository }}
+          REQUESTED_SKIA_BRANCH: ${{ inputs.skia_branch || '' }}
+        shell: bash
+        run: bash .github/scripts/check-skia-update.sh
+
+      - name: Dispatch build
+        if: steps.check.outputs.should_dispatch == 'true' && !inputs.dry_run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SKIA_BRANCH: ${{ steps.check.outputs.skia_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gh workflow run build-skia.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$GITHUB_REF_NAME" \
+            -f skia_branch="$SKIA_BRANCH" \
+            -f platforms=all \
+            -f skip_release=false \
+            -f test_mode=false
+
+          echo "Dispatched Build Skia for ${SKIA_BRANCH}."
+
+      - name: Report dry run
+        if: steps.check.outputs.should_dispatch == 'true' && inputs.dry_run
+        env:
+          SKIA_BRANCH: ${{ steps.check.outputs.skia_branch }}
+        shell: bash
+        run: |
+          echo "Dry run: would dispatch Build Skia for ${SKIA_BRANCH}."
+
+      - name: Write summary
+        env:
+          SKIA_BRANCH: ${{ steps.check.outputs.skia_branch }}
+          RELEASE_EXISTS: ${{ steps.check.outputs.release_exists }}
+          SHOULD_DISPATCH: ${{ steps.check.outputs.should_dispatch }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
+        shell: bash
+        run: |
+          {
+            echo "## Watch Skia"
+            echo
+            echo "- Latest upstream branch: \`${SKIA_BRANCH}\`"
+            echo "- Existing release: \`${RELEASE_EXISTS}\`"
+            echo "- Should dispatch: \`${SHOULD_DISPATCH}\`"
+            echo "- Dry run: \`${DRY_RUN}\`"
+            if [ "$SHOULD_DISPATCH" != "true" ]; then
+              echo "- Result: no build dispatched"
+            elif [ "$DRY_RUN" = "true" ]; then
+              echo "- Result: build would be dispatched"
+            else
+              echo "- Result: dispatched \`build-skia.yml\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

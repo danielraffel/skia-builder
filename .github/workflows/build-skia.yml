@@ -471,6 +471,7 @@ jobs:
             ./skia-build-win-x64-gpu-release/skia-build-win-x64-gpu-release.zip
             ./skia-build-win-x64-gpu-debug/skia-build-win-x64-gpu-debug.zip
             ./skia-build-linux-x64-gpu-release/skia-build-linux-x64-gpu-release.zip
+            ./skia-build-linux-arm64-gpu-release/skia-build-linux-arm64-gpu-release.zip
             ./skia-build-wasm-wasm32-gpu-release/skia-build-wasm-wasm32-gpu-release.zip
             ./Skia.xcframework/Skia.xcframework.zip
         env:

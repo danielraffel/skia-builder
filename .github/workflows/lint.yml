@@ -1,0 +1,31 @@
+name: Lint
+
+# Guards that keep the release workflow self-consistent. Cheap, fast, and
+# runs on every PR (and pushes) that touches the build workflow or the guard
+# scripts themselves.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/build-skia.yml'
+      - '.github/workflows/lint.yml'
+      - 'tools/check_release_coverage.py'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-skia.yml'
+      - '.github/workflows/lint.yml'
+      - 'tools/check_release_coverage.py'
+  workflow_dispatch:
+
+jobs:
+  release-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+      - run: pip install pyyaml
+      # Every active build-matrix lane must be uploaded by create-release.
+      # Catches the chrome/m150 regression: a lane built but never released.
+      - run: python3 tools/check_release_coverage.py

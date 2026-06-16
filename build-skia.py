@@ -83,34 +83,49 @@ VISIONOS_MIN_VERSION = "1.0"
 USE_LIBGRAPHEME = False  # Set to True to use libgrapheme instead of ICU
 
 # Shared libraries
+#
+# skottie (Lottie) depends on two modules that ship as their own static
+# libraries: `jsonreader` (modules/jsonreader/SkJSONReader.cpp, which defines
+# the `skjson::` namespace — `skjson::ObjectValue::find`,
+# `skjson::Value::toString`, etc.) and `skresources` (concrete asset/image/font
+# ResourceProviders). If they are omitted, libskottie.a links with undefined
+# `skjson::*` symbols and skottie cannot be used. They must be listed here so
+# ninja builds them and move_libs() copies them into the packaged bundle.
 LIBS = {
     "mac": [
-        "libskia.a", "libskottie.a", "libskshaper.a", "libsksg.a",
+        "libskia.a", "libskottie.a", "libjsonreader.a", "libskresources.a",
+        "libskshaper.a", "libsksg.a",
         "libskparagraph.a", "libsvg.a", "libskunicode_core.a",
         "libskunicode_libgrapheme.a" if USE_LIBGRAPHEME else "libskunicode_icu.a"
     ],
     "ios": [
-        "libskia.a", "libskottie.a", "libsksg.a", "libskshaper.a",
+        "libskia.a", "libskottie.a", "libjsonreader.a", "libskresources.a",
+        "libsksg.a", "libskshaper.a",
         "libskparagraph.a", "libsvg.a", "libskunicode_core.a",
         "libskunicode_libgrapheme.a" if USE_LIBGRAPHEME else "libskunicode_icu.a"
     ],
     "visionos": [
-        "libskia.a", "libskottie.a", "libsksg.a", "libskshaper.a",
+        "libskia.a", "libskottie.a", "libjsonreader.a", "libskresources.a",
+        "libsksg.a", "libskshaper.a",
         "libskparagraph.a", "libsvg.a", "libskunicode_core.a",
         "libskunicode_libgrapheme.a" if USE_LIBGRAPHEME else "libskunicode_icu.a"
     ],
     "win": [
-        "skia.lib", "skottie.lib", "sksg.lib", "skshaper.lib",
+        "skia.lib", "skottie.lib", "jsonreader.lib", "skresources.lib",
+        "sksg.lib", "skshaper.lib",
         "skparagraph.lib", "svg.lib", "skunicode_core.lib",
         "skunicode_libgrapheme.lib" if USE_LIBGRAPHEME else "skunicode_icu.lib"
     ],
+    # WASM omits skottie (skia_enable_skottie = false in PLATFORM_GN_ARGS),
+    # so jsonreader / skresources are intentionally absent here.
     "wasm": [
         "libskia.a", "libskottie.a", "libskshaper.a", "libsksg.a",
         "libskparagraph.a", "libsvg.a", "libskunicode_core.a",
         "libskunicode_libgrapheme.a" if USE_LIBGRAPHEME else "libskunicode_icu.a"
     ],
     "linux": [
-        "libskia.a", "libskottie.a", "libskshaper.a", "libsksg.a",
+        "libskia.a", "libskottie.a", "libjsonreader.a", "libskresources.a",
+        "libskshaper.a", "libsksg.a",
         "libskparagraph.a", "libsvg.a", "libskunicode_core.a",
         "libskunicode_libgrapheme.a" if USE_LIBGRAPHEME else "libskunicode_icu.a"
     ]
@@ -133,6 +148,7 @@ PACKAGE_DIRS = [
     "modules/skparagraph",
     "modules/skshaper",
     "modules/skresources",
+    "modules/jsonreader",
     "modules/sksg",
     "modules/skunicode",
     "modules/skcms",

@@ -53,7 +53,7 @@ assert_contains "Dry run: would report failed Skia update for chrome/m151."
 assert_contains "Skia auto-update failed: chrome/m151"
 assert_contains "build-skia (windows-2022, win, gpu, x64, Release)"
 assert_contains "@codex fix the CI failures for \`chrome/m151\`."
+assert_contains "GitHub REST job-log endpoint"
 assert_contains "Do not publish a release manually."
 
 echo "report-build-failure tests passed"
-

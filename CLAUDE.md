@@ -95,6 +95,10 @@ The GitHub Actions workflow (`.github/workflows/build-skia.yml`) builds all plat
 
 When working from Daniel's Shipyard-managed machines, prefer `ghapp` for GitHub Actions/API operations. `ghapp` wraps `gh` with the Shipyard GitHub App token and uses the app's separate API rate-limit bucket, so it keeps working even when the local personal `gh` token is stale or intentionally unused. In non-Shipyard environments where `ghapp` is not installed, use authenticated `gh` or the available GitHub integration instead. Plain `gh` is still appropriate when explicitly debugging personal GitHub auth or running commands that do not contact GitHub.
 
+The auto-update failure handoff has two watchdogs:
+- `.github/workflows/build-failure-watchdog.yml` fires when the whole `Build Skia` workflow completes with failure.
+- `.github/workflows/build-progress-watchdog.yml` polls active `Build Skia` runs so Codex is commented earlier when one matrix job has already failed while other jobs are still queued or running. This matters because `gh run view --log-failed` may not expose logs until the whole workflow completes; use the GitHub REST job-log endpoint for completed failed jobs in still-running workflows.
+
 **Workflow inputs:**
 - `skia_branch` - Skia branch to build (default: `chrome/m150`)
 - `platforms` - Platforms to build, comma-separated or `all` (default: `all`)

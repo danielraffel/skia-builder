@@ -104,6 +104,7 @@ The auto-update failure handoff has two watchdogs:
 - `platforms` - Platforms to build, comma-separated or `all` (default: `all`)
 - `skip_release` - Skip creating release, useful for testing (default: `false`)
 - `test_mode` - Skip actual build, create dummy files (default: `false`)
+- `apple_runner` - macOS runner label for Apple builds; default `macos-15`, with `macos-15-intel` available as a fallback if GitHub's M1 runner queue stalls.
 
 ```bash
 # In Daniel's Shipyard environment, use ghapp. Outside Shipyard, replace
@@ -118,6 +119,9 @@ ghapp workflow run build-skia.yml -f platforms=mac,ios -f skip_release=true
 
 # Build with different Skia branch
 ghapp workflow run build-skia.yml -f skia_branch=chrome/m150
+
+# Retry Apple builds on Intel macOS runners if macos-15 M1 jobs are stale queued
+ghapp workflow run build-skia.yml -f skia_branch=chrome/m150 -f platforms=all -f apple_runner=macos-15-intel
 
 # Check CI status
 ghapp run list

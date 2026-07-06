@@ -24,6 +24,15 @@ on:
         required: false
         type: boolean
         default: false
+      apple_runner:
+        description: 'GitHub-hosted macOS runner label for Apple builds'
+        required: false
+        type: choice
+        options:
+          - macos-15
+          - macos-15-intel
+          - macos-14
+        default: macos-15
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.skia_branch || 'chrome/m150' }}-${{ inputs.platforms || 'all' }}-${{ inputs.skip_release && 'skip-release' || 'release' }}
@@ -123,7 +132,7 @@ jobs:
           #   platform: ios
           #   variant: cpu
           #   arch: ""
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ startsWith(matrix.os, 'macos') && (inputs.apple_runner || 'macos-15') || matrix.os }}
     env:
       SKIA_BRANCH: ${{ inputs.skia_branch || 'chrome/m150' }}
     outputs:
@@ -343,7 +352,7 @@ jobs:
   create-xcframework:
     needs: build-skia
     if: ${{ !inputs.skip_release && (inputs.platforms == 'all') }}
-    runs-on: macos-15
+    runs-on: ${{ inputs.apple_runner || 'macos-15' }}
     steps:
       - name: Download macOS artifact
         uses: actions/download-artifact@v7

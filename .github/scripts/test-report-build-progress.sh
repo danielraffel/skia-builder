@@ -134,6 +134,7 @@ assert_contains "failed matrix job before workflow completion"
 assert_contains "Run status when reported: \`queued\`"
 assert_contains "build-skia (windows-2022, win, gpu, x64, Release)"
 assert_contains "GitHub REST job-log endpoint"
+assert_contains "apple_runner=macos-15-intel"
 assert_contains "@codex fix the CI failures for \`chrome/m151\`."
 
 stale_output="$(

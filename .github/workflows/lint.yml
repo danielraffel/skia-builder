@@ -8,12 +8,16 @@ on:
     paths:
       - '.github/workflows/build-skia.yml'
       - '.github/workflows/lint.yml'
+      - 'patches/apply_dawn_ios_visionos.py'
+      - 'patches/test_apply_dawn_ios_visionos.py'
       - 'tools/check_release_coverage.py'
   push:
     branches: [main]
     paths:
       - '.github/workflows/build-skia.yml'
       - '.github/workflows/lint.yml'
+      - 'patches/apply_dawn_ios_visionos.py'
+      - 'patches/test_apply_dawn_ios_visionos.py'
       - 'tools/check_release_coverage.py'
   workflow_dispatch:
 
@@ -29,3 +33,4 @@ jobs:
       # Every active build-matrix lane must be uploaded by create-release.
       # Catches the chrome/m150 regression: a lane built but never released.
       - run: python3 tools/check_release_coverage.py
+      - run: python3 patches/test_apply_dawn_ios_visionos.py

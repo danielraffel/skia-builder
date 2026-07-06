@@ -127,6 +127,26 @@ def apply_patches(skia_dir: Path):
     else:
         print("  build_dawn.py already patched")
 
+    content = build_dawn_py.read_text()
+    if "-DDAWN_SUPPORTS_CXX_MODULES=OFF" not in content:
+        new_content = content.replace(
+            '''      "-DCMAKE_CXX_EXTENSIONS=OFF",
+      "-DDAWN_FORCE_SYSTEM_COMPONENT_LOAD=ON", # https://g-issues.chromium.org/issues/399358291''',
+            '''      "-DCMAKE_CXX_EXTENSIONS=OFF",
+      # Skia consumes Dawn headers and libraries, not Dawn's C++20 module interface.
+      # Force it off because CMake always scans CXX_MODULES file sets, and clang-cl
+      # on GitHub's Windows runner does not provide a usable module dependency scanner.
+      "-DDAWN_SUPPORTS_CXX_MODULES=OFF",
+      "-DDAWN_FORCE_SYSTEM_COMPONENT_LOAD=ON", # https://g-issues.chromium.org/issues/399358291'''
+        )
+        if new_content != content:
+            build_dawn_py.write_text(new_content)
+            print("  Patched build_dawn.py to disable Dawn C++20 modules")
+        else:
+            print("  Warning: could not find build_dawn.py CMake args block to disable Dawn C++20 modules")
+    else:
+        print("  build_dawn.py already disables Dawn C++20 modules")
+
     # 4. Modify cmake_utils.py - add iOS support and settings functions
     cmake_utils_py = dawn_dir / "cmake_utils.py"
     content = cmake_utils_py.read_text()

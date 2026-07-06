@@ -1,0 +1,49 @@
+name: Build Progress Watchdog
+run-name: Build Progress Watchdog
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Specific Build Skia run ID to inspect"
+        required: false
+        type: string
+      stale_minutes:
+        description: "Report queued/pending runs older than this many minutes"
+        required: false
+        type: string
+        default: "90"
+  schedule:
+    - cron: "*/30 * * * *"
+
+permissions:
+  actions: read
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: build-progress-watchdog
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout watchdog scripts
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          # Optional: use a user or bot token if github-actions[bot] comments do
+          # not trigger the connected Codex GitHub integration.
+          token: ${{ secrets.CODEX_TRIGGER_TOKEN != '' && secrets.CODEX_TRIGGER_TOKEN || github.token }}
+
+      - name: Report in-progress failures and stale queues
+        env:
+          GH_TOKEN: ${{ secrets.CODEX_TRIGGER_TOKEN != '' && secrets.CODEX_TRIGGER_TOKEN || github.token }}
+          RELEASE_REPO: ${{ github.repository }}
+          WATCH_RUN_ID: ${{ inputs.run_id || '' }}
+          STALE_MINUTES: ${{ inputs.stale_minutes || '90' }}
+        shell: bash
+        run: bash .github/scripts/report-build-progress.sh

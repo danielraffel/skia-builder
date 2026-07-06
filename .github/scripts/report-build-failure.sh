@@ -9,6 +9,11 @@ FAILED_RUN_URL="${FAILED_RUN_URL:-}"
 FAILED_RUN_NAME="${FAILED_RUN_NAME:-Build Skia}"
 FAILED_HEAD_SHA="${FAILED_HEAD_SHA:-}"
 FAILED_HEAD_BRANCH="${FAILED_HEAD_BRANCH:-main}"
+FAILED_RUN_STATUS="${FAILED_RUN_STATUS:-unknown}"
+FAILED_RUN_CREATED_AT="${FAILED_RUN_CREATED_AT:-}"
+FAILED_RUN_UPDATED_AT="${FAILED_RUN_UPDATED_AT:-}"
+FAILED_JOBS_MARKDOWN="${FAILED_JOBS_MARKDOWN:-}"
+FAILURE_REASON="${FAILURE_REASON:-completed workflow failure}"
 SKIA_BRANCH="${SKIA_BRANCH:-}"
 DRY_RUN="${DRY_RUN:-false}"
 
@@ -42,6 +47,11 @@ resolve_skia_branch() {
 }
 
 failed_jobs_markdown() {
+  if [ -n "$FAILED_JOBS_MARKDOWN" ]; then
+    printf '%s\n' "$FAILED_JOBS_MARKDOWN"
+    return
+  fi
+
   if [ -z "$FAILED_RUN_ID" ]; then
     echo "- Failed run ID was not provided."
     return
@@ -63,12 +73,16 @@ write_report() {
   cat > "$report_file" <<EOF
 # Skia auto-update failed: ${skia_branch}
 
-The automated Skia update detected \`${skia_branch}\`, dispatched \`${FAILED_RUN_NAME}\`, and the build failed before a release could be published.
+The automated Skia update detected \`${skia_branch}\`, dispatched \`${FAILED_RUN_NAME}\`, and the build needs attention before a release can be published.
 
 - Failed run: ${FAILED_RUN_URL}
 - Failing head branch: \`${FAILED_HEAD_BRANCH}\`
 - Failing head SHA: \`${FAILED_HEAD_SHA}\`
 - Target Skia branch: \`${skia_branch}\`
+- Run status when reported: \`${FAILED_RUN_STATUS}\`
+- Detection reason: \`${FAILURE_REASON}\`
+- Created at: \`${FAILED_RUN_CREATED_AT:-unknown}\`
+- Updated at: \`${FAILED_RUN_UPDATED_AT:-unknown}\`
 
 ## Failed jobs
 
@@ -76,7 +90,7 @@ ${failed_jobs}
 
 ## Expected handling
 
-1. Inspect the failed jobs and logs.
+1. Inspect the failed or stalled jobs and logs.
 2. Make the smallest repository change needed to restore the \`${skia_branch}\` build.
 3. Let the normal \`Build Skia\` workflow publish the release after the fix merges.
 
@@ -94,10 +108,13 @@ write_codex_prompt() {
 The Skia auto-update build failed here:
 ${FAILED_RUN_URL}
 
+Run status when reported: \`${FAILED_RUN_STATUS}\`
+Detection reason: \`${FAILURE_REASON}\`
+
 Failed jobs:
 ${failed_jobs}
 
-Please focus on the failing jobs, make the smallest repo change needed, and push the fix to this PR branch. Do not publish a release manually.
+Please focus on the failing or stalled jobs, make the smallest repo change needed, and push the fix to this PR branch. If the workflow is still running, inspect completed failed jobs through the GitHub REST job-log endpoint because \`gh run view --log-failed\` may wait for the whole workflow to complete. Do not publish a release manually.
 EOF
 }
 

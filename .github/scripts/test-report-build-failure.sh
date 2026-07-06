@@ -56,4 +56,29 @@ assert_contains "@codex fix the CI failures for \`chrome/m151\`."
 assert_contains "GitHub REST job-log endpoint"
 assert_contains "Do not publish a release manually."
 
+cat > "${TMP_DIR}/gh-disabled-issues" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$1" = "api" ] && [ "$2" = "repos/owner/repo" ] && [ "${3:-}" = "--jq" ]; then
+  echo "false"
+  exit 0
+fi
+
+echo "unexpected gh call: $*" >&2
+exit 1
+EOF
+chmod +x "${TMP_DIR}/gh-disabled-issues"
+
+source "${SCRIPT_DIR}/report-build-failure.sh"
+
+GH_BIN="${TMP_DIR}/gh-disabled-issues"
+RELEASE_REPO=owner/repo
+issue_output="$(ensure_issue chrome/m151 /dev/null 2>&1)"
+if [[ "$issue_output" != *"Issues are disabled for owner/repo; skipping issue handoff."* ]]; then
+  echo "FAIL: disabled issues should be skipped" >&2
+  echo "$issue_output" >&2
+  exit 1
+fi
+
 echo "report-build-failure tests passed"

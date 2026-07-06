@@ -123,6 +123,17 @@ ensure_issue() {
   local report_file="$2"
   local issue_number
   local issue_url
+  local has_issues
+
+  if ! has_issues="$("$GH_BIN" api "repos/${RELEASE_REPO}" --jq '.has_issues' 2>/dev/null)"; then
+    echo "Could not determine whether issues are enabled for ${RELEASE_REPO}; skipping issue handoff." >&2
+    return 0
+  fi
+
+  if [ "$has_issues" != "true" ]; then
+    echo "Issues are disabled for ${RELEASE_REPO}; skipping issue handoff." >&2
+    return 0
+  fi
 
   "$GH_BIN" label create auto-update-failed \
     --repo "$RELEASE_REPO" \
@@ -130,21 +141,30 @@ ensure_issue() {
     --color d73a4a \
     --force >/dev/null 2>&1 || true
 
-  issue_number="$("$GH_BIN" issue list \
+  if ! issue_number="$("$GH_BIN" issue list \
     --repo "$RELEASE_REPO" \
     --state open \
     --search "Skia auto-update failed: ${skia_branch} in:title" \
     --json number \
-    --jq '.[0].number // ""')"
+    --jq '.[0].number // ""')"; then
+    echo "Could not list existing auto-update issues; skipping issue handoff." >&2
+    return 0
+  fi
 
   if [ -n "$issue_number" ]; then
-    "$GH_BIN" issue comment "$issue_number" --repo "$RELEASE_REPO" --body-file "$report_file" >/dev/null
+    if ! "$GH_BIN" issue comment "$issue_number" --repo "$RELEASE_REPO" --body-file "$report_file" >/dev/null; then
+      echo "Could not comment on issue #${issue_number}; skipping issue handoff." >&2
+      return 0
+    fi
   else
-    issue_url="$("$GH_BIN" issue create \
+    if ! issue_url="$("$GH_BIN" issue create \
       --repo "$RELEASE_REPO" \
       --title "Skia auto-update failed: ${skia_branch}" \
       --label auto-update-failed \
-      --body-file "$report_file")"
+      --body-file "$report_file")"; then
+      echo "Could not create auto-update issue; skipping issue handoff." >&2
+      return 0
+    fi
     issue_number="${issue_url##*/}"
   fi
 
@@ -237,7 +257,11 @@ main() {
   {
     echo "## Build Failure Watchdog"
     echo
-    echo "- Issue: #${issue_number}"
+    if [ -n "$issue_number" ]; then
+      echo "- Issue: #${issue_number}"
+    else
+      echo "- Issue: skipped"
+    fi
     echo "- Codex PR: ${pr_url}"
     echo "- Skia branch: \`${skia_branch}\`"
   } >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
@@ -245,4 +269,6 @@ main() {
   rm -f "$report_file" "$prompt_file"
 }
 
-main "$@"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi

@@ -19,6 +19,8 @@ env:
 jobs:
   create-xcframework:
     runs-on: macos-15
+    permissions:
+      contents: write
     steps:
       - name: Download release artifacts
         env:

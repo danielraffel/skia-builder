@@ -69,6 +69,10 @@ jobs_summary() {
   python3 -c '
 import json
 import sys
+import datetime
+
+now_epoch = int(sys.argv[1])
+stale_minutes = int(sys.argv[2])
 
 payload = json.load(sys.stdin)
 jobs = payload.get("jobs", [])
@@ -76,6 +80,13 @@ failed = [job for job in jobs if job.get("conclusion") == "failure"]
 queued = [job for job in jobs if job.get("status") == "queued"]
 in_progress = [job for job in jobs if job.get("status") == "in_progress"]
 completed = [job for job in jobs if job.get("status") == "completed"]
+
+def iso_epoch(value):
+    if not value:
+        return None
+    if value.endswith("Z"):
+        value = value[:-1] + "+00:00"
+    return int(datetime.datetime.fromisoformat(value).timestamp())
 
 if failed:
     markdown = "\n".join(
@@ -85,6 +96,26 @@ if failed:
 else:
     markdown = ""
 
+stale_queued = []
+for job in queued:
+    queued_at = job.get("created_at") or job.get("started_at")
+    queued_epoch = iso_epoch(queued_at)
+    if queued_epoch is None:
+        continue
+    age_minutes = (now_epoch - queued_epoch) // 60
+    if age_minutes >= stale_minutes:
+        stale_queued.append((job, age_minutes))
+
+if stale_queued:
+    stale_markdown = "\n".join(
+        "- [{}]({}) queued for {} minutes".format(
+            job.get("name"), job.get("html_url"), age_minutes
+        )
+        for job, age_minutes in stale_queued
+    )
+else:
+    stale_markdown = ""
+
 print(json.dumps({
     "failed_count": len(failed),
     "queued_count": len(queued),
@@ -92,8 +123,10 @@ print(json.dumps({
     "completed_count": len(completed),
     "total_count": len(jobs),
     "failed_jobs_markdown": markdown,
+    "stale_queued_count": len(stale_queued),
+    "stale_queued_jobs_markdown": stale_markdown,
 }))
-'
+' "$1" "$2"
 }
 
 json_field() {
@@ -178,13 +211,23 @@ main() {
     local summary
     local failed_count
     local failed_jobs_markdown
+    local stale_queued_count
+    local stale_queued_jobs_markdown
     jobs_json="$(api "repos/${RELEASE_REPO}/actions/runs/${run_id}/jobs?per_page=100")"
-    summary="$(printf '%s' "$jobs_json" | jobs_summary)"
+    summary="$(printf '%s' "$jobs_json" | jobs_summary "$now_epoch" "$STALE_MINUTES")"
     failed_count="$(printf '%s' "$summary" | json_field failed_count)"
     failed_jobs_markdown="$(printf '%s' "$summary" | json_field failed_jobs_markdown)"
+    stale_queued_count="$(printf '%s' "$summary" | json_field stale_queued_count)"
+    stale_queued_jobs_markdown="$(printf '%s' "$summary" | json_field stale_queued_jobs_markdown)"
 
     if [ "$failed_count" -gt 0 ]; then
       report_run "$run_id" "$status" "$conclusion" "$html_url" "$head_sha" "$head_branch" "$run_name" "$created_at" "$updated_at" "failed matrix job before workflow completion" "$failed_jobs_markdown"
+      reported=$((reported + 1))
+      continue
+    fi
+
+    if [ "$stale_queued_count" -gt 0 ]; then
+      report_run "$run_id" "$status" "$conclusion" "$html_url" "$head_sha" "$head_branch" "$run_name" "$created_at" "$updated_at" "stale queued matrix job for at least ${STALE_MINUTES} minutes" "$stale_queued_jobs_markdown"
       reported=$((reported + 1))
       continue
     fi

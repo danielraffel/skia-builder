@@ -84,7 +84,7 @@ The automated Skia update detected \`${skia_branch}\`, dispatched \`${FAILED_RUN
 - Created at: \`${FAILED_RUN_CREATED_AT:-unknown}\`
 - Updated at: \`${FAILED_RUN_UPDATED_AT:-unknown}\`
 
-## Failed jobs
+## Failed or stalled jobs
 
 ${failed_jobs}
 
@@ -111,7 +111,7 @@ ${FAILED_RUN_URL}
 Run status when reported: \`${FAILED_RUN_STATUS}\`
 Detection reason: \`${FAILURE_REASON}\`
 
-Failed jobs:
+Failed or stalled jobs:
 ${failed_jobs}
 
 Please focus on the failing or stalled jobs, make the smallest repo change needed, and push the fix to this PR branch. If the workflow is still running, inspect completed failed jobs through the GitHub REST job-log endpoint because \`gh run view --log-failed\` may wait for the whole workflow to complete. Do not publish a release manually.

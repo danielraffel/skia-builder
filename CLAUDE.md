@@ -93,6 +93,8 @@ This approach was informed by research into:
 
 The GitHub Actions workflow (`.github/workflows/build-skia.yml`) builds all platforms in parallel and creates releases tagged with the Skia branch name.
 
+When working from Daniel's Shipyard-managed machines, prefer `ghapp` for GitHub Actions/API operations. `ghapp` wraps `gh` with the Shipyard GitHub App token and uses the app's separate API rate-limit bucket, so it keeps working even when the local personal `gh` token is stale or intentionally unused. In non-Shipyard environments where `ghapp` is not installed, use authenticated `gh` or the available GitHub integration instead. Plain `gh` is still appropriate when explicitly debugging personal GitHub auth or running commands that do not contact GitHub.
+
 **Workflow inputs:**
 - `skia_branch` - Skia branch to build (default: `chrome/m150`)
 - `platforms` - Platforms to build, comma-separated or `all` (default: `all`)
@@ -100,20 +102,23 @@ The GitHub Actions workflow (`.github/workflows/build-skia.yml`) builds all plat
 - `test_mode` - Skip actual build, create dummy files (default: `false`)
 
 ```bash
+# In Daniel's Shipyard environment, use ghapp. Outside Shipyard, replace
+# ghapp with an authenticated gh command.
+
 # Build all platforms and create release
-gh workflow run build-skia.yml
+ghapp workflow run build-skia.yml
 
 # Build specific platform(s) without release
-gh workflow run build-skia.yml -f platforms=visionos -f skip_release=true
-gh workflow run build-skia.yml -f platforms=mac,ios -f skip_release=true
+ghapp workflow run build-skia.yml -f platforms=visionos -f skip_release=true
+ghapp workflow run build-skia.yml -f platforms=mac,ios -f skip_release=true
 
 # Build with different Skia branch
-gh workflow run build-skia.yml -f skia_branch=chrome/m150
+ghapp workflow run build-skia.yml -f skia_branch=chrome/m150
 
 # Check CI status
-gh run list
-gh run view <run-id> --log-failed
+ghapp run list
+ghapp run view <run-id> --log-failed
 
 # Create XCFramework from existing release (without rebuilding)
-gh workflow run create-xcframework.yml -f release_tag=chrome/m150
+ghapp workflow run create-xcframework.yml -f release_tag=chrome/m150
 ```

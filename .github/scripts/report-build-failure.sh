@@ -171,6 +171,28 @@ ensure_issue() {
   printf '%s\n' "$issue_number"
 }
 
+existing_codex_pr_url() {
+  local branch="$1"
+  local repo_owner="${RELEASE_REPO%%/*}"
+  local pr_url
+
+  for head in "$branch" "${repo_owner}:${branch}"; do
+    if ! pr_url="$("$GH_BIN" pr list \
+      --repo "$RELEASE_REPO" \
+      --head "$head" \
+      --state open \
+      --json url \
+      --jq '.[0].url // ""' 2>/dev/null)"; then
+      pr_url=""
+    fi
+
+    if [ -n "$pr_url" ]; then
+      printf '%s\n' "$pr_url"
+      return
+    fi
+  done
+}
+
 create_codex_pr() {
   local skia_branch="$1"
   local report_file="$2"
@@ -180,23 +202,28 @@ create_codex_pr() {
   local marker=".github/codex-failures/skia-auto-fix-${safe_branch}-${FAILED_RUN_ID:-manual}.md"
   local pr_url
 
+  pr_url="$(existing_codex_pr_url "$branch")"
+  if [ -n "$pr_url" ]; then
+    "$GH_BIN" pr comment "$pr_url" --body-file "$prompt_file" >/dev/null
+    printf '%s\n' "$pr_url"
+    return
+  fi
+
   if git ls-remote --exit-code origin "refs/heads/${branch}" >/dev/null 2>&1; then
-    pr_url="$("$GH_BIN" pr list \
+    pr_url="$("$GH_BIN" pr create \
       --repo "$RELEASE_REPO" \
+      --base "$FAILED_HEAD_BRANCH" \
       --head "$branch" \
-      --state open \
-      --json url \
-      --jq '.[0].url // ""')"
-    if [ -n "$pr_url" ]; then
-      "$GH_BIN" pr comment "$pr_url" --body-file "$prompt_file" >/dev/null
-      printf '%s\n' "$pr_url"
-      return
-    fi
+      --title "Fix Skia auto-update failure: ${skia_branch}" \
+      --body-file "$report_file")"
+    "$GH_BIN" pr comment "$pr_url" --body-file "$prompt_file" >/dev/null
+    printf '%s\n' "$pr_url"
+    return
   fi
 
   git config user.name "github-actions[bot]"
   git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-  git switch -c "$branch"
+  git switch -C "$branch"
   mkdir -p "$(dirname "$marker")"
   cp "$report_file" "$marker"
   git add "$marker"

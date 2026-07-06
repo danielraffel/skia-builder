@@ -93,6 +93,7 @@ The repository includes a GitHub Actions workflow (`.github/workflows/build-skia
 | `platforms` | Platforms to build (comma-separated or `all`) | `all` |
 | `skip_release` | Skip creating release | `false` |
 | `test_mode` | Skip build, create dummy files | `false` |
+| `apple_runner` | macOS runner label for Apple builds (`macos-15`, `macos-15-intel`, or `macos-14`) | `macos-15` |
 
 ### Trigger Builds
 
@@ -107,6 +108,9 @@ gh workflow run build-skia.yml -f platforms=win -f skip_release=true
 
 # Build with a different Skia branch
 gh workflow run build-skia.yml -f skia_branch=chrome/m150
+
+# Retry Apple builds on the Intel macOS runner if GitHub's M1 runners are stalled
+gh workflow run build-skia.yml -f skia_branch=chrome/m150 -f platforms=all -f apple_runner=macos-15-intel
 ```
 
 ### Automatic Skia Updates

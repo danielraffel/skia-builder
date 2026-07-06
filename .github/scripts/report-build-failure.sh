@@ -114,7 +114,7 @@ Detection reason: \`${FAILURE_REASON}\`
 Failed or stalled jobs:
 ${failed_jobs}
 
-Please focus on the failing or stalled jobs, make the smallest repo change needed, and push the fix to this PR branch. If the workflow is still running, inspect completed failed jobs through the GitHub REST job-log endpoint because \`gh run view --log-failed\` may wait for the whole workflow to complete. Do not publish a release manually.
+Please focus on the failing or stalled jobs, make the smallest repo change needed, and push the fix to this PR branch. If the workflow is still running, inspect completed failed jobs through the GitHub REST job-log endpoint because \`gh run view --log-failed\` may wait for the whole workflow to complete. If the only blocker is stale queued \`macos-15\` jobs, cancel the stale release run before retrying with \`-f apple_runner=macos-15-intel\` to avoid duplicate release publishers. Do not publish a release manually.
 EOF
 }
 

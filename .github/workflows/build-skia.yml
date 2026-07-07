@@ -40,6 +40,7 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  LLVM_VERSION: "20.1.0"
 
 permissions:
   contents: write
@@ -202,26 +203,82 @@ jobs:
         if: steps.check.outputs.should_build == 'true'
         run: git config --global init.defaultBranch main
 
-      - name: Install LLVM and Clang
-        if: steps.check.outputs.should_build == 'true' && runner.os != 'macOS' && matrix.os != 'windows-11-arm'
-        uses: KyleMayes/install-llvm-action@v2
-        with:
-          version: "20.1.0"
-          env: true
+      - name: Install LLVM and Clang (Linux)
+        if: steps.check.outputs.should_build == 'true' && runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      - name: Install LLVM and Clang (Windows ARM64)
-        if: steps.check.outputs.should_build == 'true' && matrix.os == 'windows-11-arm'
+          case "${{ runner.arch }}" in
+            X64) package_arch="Linux-X64" ;;
+            ARM64) package_arch="Linux-ARM64" ;;
+            *)
+              echo "Unsupported Linux runner architecture: ${{ runner.arch }}" >&2
+              exit 1
+              ;;
+          esac
+
+          package="LLVM-${LLVM_VERSION}-${package_arch}.tar.xz"
+          url="https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VERSION}/${package}"
+          install_dir="${RUNNER_TOOL_CACHE}/llvm-${LLVM_VERSION}-${package_arch}"
+
+          mkdir -p "$install_dir"
+          curl -fsSL "$url" -o "${RUNNER_TEMP}/${package}"
+          tar -xJf "${RUNNER_TEMP}/${package}" --strip-components=1 -C "$install_dir"
+
+          echo "${install_dir}/bin" >> "$GITHUB_PATH"
+          {
+            echo "LLVM_PATH=${install_dir}"
+            echo "CC=${install_dir}/bin/clang"
+            echo "CXX=${install_dir}/bin/clang++"
+            echo "LD_LIBRARY_PATH=${install_dir}/lib:${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
+
+          "${install_dir}/bin/clang" --version
+
+      - name: Install LLVM and Clang (Windows x64)
+        if: steps.check.outputs.should_build == 'true' && runner.os == 'Windows' && matrix.os != 'windows-11-arm'
         shell: pwsh
         run: |
-          $llvmUrl = "https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.0/LLVM-20.1.0-woa64.exe"
-          $installerPath = "$env:TEMP\llvm-installer.exe"
+          $llvmUrl = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/LLVM-$env:LLVM_VERSION-win64.exe"
+          $installerPath = "$env:RUNNER_TEMP\llvm-installer.exe"
+          $llvmPath = "C:\Program Files\LLVM"
+          $llvmBin = "$llvmPath\bin"
+
           Write-Host "Downloading LLVM installer..."
           Invoke-WebRequest -Uri $llvmUrl -OutFile $installerPath
           Write-Host "Installing LLVM silently..."
           Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait
           Write-Host "LLVM installed successfully"
-          # Add LLVM to PATH
-          echo "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+          $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "LLVM_PATH=$llvmPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CC=$llvmBin\clang-cl.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CXX=$llvmBin\clang-cl.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          & "$llvmBin\clang.exe" --version
+
+      - name: Install LLVM and Clang (Windows ARM64)
+        if: steps.check.outputs.should_build == 'true' && matrix.os == 'windows-11-arm'
+        shell: pwsh
+        run: |
+          $llvmUrl = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_VERSION/LLVM-$env:LLVM_VERSION-woa64.exe"
+          $installerPath = "$env:RUNNER_TEMP\llvm-installer.exe"
+          $llvmPath = "C:\Program Files\LLVM"
+          $llvmBin = "$llvmPath\bin"
+
+          Write-Host "Downloading LLVM installer..."
+          Invoke-WebRequest -Uri $llvmUrl -OutFile $installerPath
+          Write-Host "Installing LLVM silently..."
+          Start-Process -FilePath $installerPath -ArgumentList "/S" -Wait
+          Write-Host "LLVM installed successfully"
+
+          $llvmBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "LLVM_PATH=$llvmPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CC=$llvmBin\clang-cl.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CXX=$llvmBin\clang-cl.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          & "$llvmBin\clang.exe" --version
 
       - name: Set cache key arch
         if: steps.check.outputs.should_build == 'true'

@@ -13,6 +13,11 @@ on:
         required: false
         type: string
         default: "90"
+      active_stale_minutes:
+        description: "Report in-progress matrix jobs running longer than this many minutes"
+        required: false
+        type: string
+        default: "240"
   schedule:
     - cron: "*/30 * * * *"
 
@@ -45,5 +50,6 @@ jobs:
           RELEASE_REPO: ${{ github.repository }}
           WATCH_RUN_ID: ${{ inputs.run_id || '' }}
           STALE_MINUTES: ${{ inputs.stale_minutes || '90' }}
+          ACTIVE_STALE_MINUTES: ${{ inputs.active_stale_minutes || '240' }}
         shell: bash
         run: bash .github/scripts/report-build-progress.sh

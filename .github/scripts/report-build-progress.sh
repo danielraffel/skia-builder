@@ -9,6 +9,7 @@ BUILD_WORKFLOW_NAME="${BUILD_WORKFLOW_NAME:-Build Skia}"
 DEFAULT_BRANCH="${DEFAULT_BRANCH:-}"
 WATCH_RUN_ID="${WATCH_RUN_ID:-}"
 STALE_MINUTES="${STALE_MINUTES:-90}"
+ACTIVE_STALE_MINUTES="${ACTIVE_STALE_MINUTES:-240}"
 MAX_RUNS="${MAX_RUNS:-10}"
 DRY_RUN="${DRY_RUN:-false}"
 
@@ -73,6 +74,7 @@ import datetime
 
 now_epoch = int(sys.argv[1])
 stale_minutes = int(sys.argv[2])
+active_stale_minutes = int(sys.argv[3])
 
 payload = json.load(sys.stdin)
 jobs = payload.get("jobs", [])
@@ -116,6 +118,25 @@ if stale_queued:
 else:
     stale_markdown = ""
 
+stale_running = []
+for job in in_progress:
+    started_epoch = iso_epoch(job.get("started_at") or job.get("created_at"))
+    if started_epoch is None:
+        continue
+    age_minutes = (now_epoch - started_epoch) // 60
+    if age_minutes >= active_stale_minutes:
+        stale_running.append((job, age_minutes))
+
+if stale_running:
+    stale_running_markdown = "\n".join(
+        "- [{}]({}) in progress for {} minutes".format(
+            job.get("name"), job.get("html_url"), age_minutes
+        )
+        for job, age_minutes in stale_running
+    )
+else:
+    stale_running_markdown = ""
+
 print(json.dumps({
     "failed_count": len(failed),
     "queued_count": len(queued),
@@ -125,8 +146,10 @@ print(json.dumps({
     "failed_jobs_markdown": markdown,
     "stale_queued_count": len(stale_queued),
     "stale_queued_jobs_markdown": stale_markdown,
+    "stale_running_count": len(stale_running),
+    "stale_running_jobs_markdown": stale_running_markdown,
 }))
-' "$1" "$2"
+' "$1" "$2" "$3"
 }
 
 json_field() {
@@ -213,12 +236,16 @@ main() {
     local failed_jobs_markdown
     local stale_queued_count
     local stale_queued_jobs_markdown
+    local stale_running_count
+    local stale_running_jobs_markdown
     jobs_json="$(api "repos/${RELEASE_REPO}/actions/runs/${run_id}/jobs?per_page=100")"
-    summary="$(printf '%s' "$jobs_json" | jobs_summary "$now_epoch" "$STALE_MINUTES")"
+    summary="$(printf '%s' "$jobs_json" | jobs_summary "$now_epoch" "$STALE_MINUTES" "$ACTIVE_STALE_MINUTES")"
     failed_count="$(printf '%s' "$summary" | json_field failed_count)"
     failed_jobs_markdown="$(printf '%s' "$summary" | json_field failed_jobs_markdown)"
     stale_queued_count="$(printf '%s' "$summary" | json_field stale_queued_count)"
     stale_queued_jobs_markdown="$(printf '%s' "$summary" | json_field stale_queued_jobs_markdown)"
+    stale_running_count="$(printf '%s' "$summary" | json_field stale_running_count)"
+    stale_running_jobs_markdown="$(printf '%s' "$summary" | json_field stale_running_jobs_markdown)"
 
     if [ "$failed_count" -gt 0 ]; then
       report_run "$run_id" "$status" "$conclusion" "$html_url" "$head_sha" "$head_branch" "$run_name" "$created_at" "$updated_at" "failed matrix job before workflow completion" "$failed_jobs_markdown"
@@ -228,6 +255,12 @@ main() {
 
     if [ "$stale_queued_count" -gt 0 ]; then
       report_run "$run_id" "$status" "$conclusion" "$html_url" "$head_sha" "$head_branch" "$run_name" "$created_at" "$updated_at" "stale queued matrix job for at least ${STALE_MINUTES} minutes" "$stale_queued_jobs_markdown"
+      reported=$((reported + 1))
+      continue
+    fi
+
+    if [ "$stale_running_count" -gt 0 ]; then
+      report_run "$run_id" "$status" "$conclusion" "$html_url" "$head_sha" "$head_branch" "$run_name" "$created_at" "$updated_at" "stale in-progress matrix job for at least ${ACTIVE_STALE_MINUTES} minutes" "$stale_running_jobs_markdown"
       reported=$((reported + 1))
       continue
     fi

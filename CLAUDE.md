@@ -97,7 +97,7 @@ When working from Daniel's Shipyard-managed machines, prefer `ghapp` for GitHub 
 
 The auto-update failure handoff has two watchdogs:
 - `.github/workflows/build-failure-watchdog.yml` fires when the whole `Build Skia` workflow completes with failure.
-- `.github/workflows/build-progress-watchdog.yml` polls active `Build Skia` runs so Codex is commented earlier when one matrix job has already failed while other jobs are still queued or running. This matters because `gh run view --log-failed` may not expose logs until the whole workflow completes; use the GitHub REST job-log endpoint for completed failed jobs in still-running workflows.
+- `.github/workflows/build-progress-watchdog.yml` polls active `Build Skia` runs so Codex is commented earlier when one matrix job has already failed, stayed queued too long, or stayed in progress long enough to look hung. This matters because `gh run view --log-failed` may not expose logs until the whole workflow completes; use the GitHub REST job-log endpoint for completed failed jobs in still-running workflows.
 
 **Workflow inputs:**
 - `skia_branch` - Skia branch to build (default: `chrome/m150`)

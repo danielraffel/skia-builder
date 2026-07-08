@@ -51,7 +51,34 @@ ulimit -n 2048
 
 in order to increase the number of files that can be opened at once.
 
-Note: macOS builds target macOS 11+ (Big Sur). This is hardcoded in Skia's `gn/skia/BUILD.gn` via the `-target` compiler flag.
+## Minimum OS versions (deployment targets)
+
+The output libraries are built for these minimum OS versions. The values track
+Google's upstream, so they stay consistent with what Chrome/Dawn are built and
+tested against.
+
+| Platform | Minimum | Set where | Tracks |
+|----------|---------|-----------|--------|
+| macOS | **13.0** (Ventura) | `MAC_MIN_VERSION` in `build-skia.py` (env `MAC_DEPLOYMENT_TARGET`); applied as `-target {arch}-apple-macos{MAC_MIN_VERSION}` on the mac path | Chromium `mac_deployment_target` in `build/config/mac/mac_sdk.gni` (12.0 @ M150, 13.0 @ M151) |
+| iOS | 14.0 | `IOS_MIN_VERSION` (Dawn needs iOS 14+ for C++ atomic wait/notify) | Dawn iOS requirement |
+| visionOS | 1.0 | `VISIONOS_MIN_VERSION` | — |
+| Linux | host glibc (see note) | not yet pinned | — |
+| Windows | Skia GN default | Skia's `WINVER`/`_WIN32_WINNT` | Skia defaults |
+
+**To change the macOS minimum:** edit `MAC_MIN_VERSION` in `build-skia.py`, or set
+`MAC_DEPLOYMENT_TARGET` in the environment before building.
+
+**Two build systems, two levers (both driven by `MAC_MIN_VERSION`):** Skia is built
+by GN and takes the deployment target from the `-target` in `extra_cflags`. **Dawn is
+built by its own CMake sub-build (`cmake_dawn/`) and does not inherit GN flags** — it
+picks up the target from the `MACOSX_DEPLOYMENT_TARGET` environment variable, which the
+mac path exports. Before this, the mac path set neither, so Skia pinned its own internal
+min (~11) while Dawn's objects inherited the CI runner's macOS (e.g. 15.0 on macos-15).
+
+**Linux note:** the Linux build currently passes no `--sysroot`, so the resulting
+`.so` binds against the *build host's* glibc — i.e. the libraries require whatever
+glibc the build machine has. To get a predictable, low Linux floor, build against a
+pinned sysroot (as Chromium does with its Debian sysroot). Tracked as a follow-up.
 
 ### Build for macOS universal (arm64 & x86_64 intel)
 

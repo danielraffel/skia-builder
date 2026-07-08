@@ -75,7 +75,12 @@ WIN_LIB_DIR = BASE_DIR / "win" / "lib"
 LINUX_LIB_DIR = BASE_DIR / "linux" / "lib"
 
 # Platform-specific constants
-MAC_MIN_VERSION = "10.15"
+# macOS deployment target for the mac slice. Tracks Chromium's
+# mac_deployment_target (build/config/mac/mac_sdk.gni): 13.0 at chrome/m151.
+# Applied via an explicit -target on the mac path below; without it Dawn's
+# minos would inherit the CI runner's macOS (Skia pins its own, Dawn does not).
+# Override per build with the MAC_DEPLOYMENT_TARGET env var. See README.
+MAC_MIN_VERSION = os.environ.get("MAC_DEPLOYMENT_TARGET") or "13.0"
 IOS_MIN_VERSION = "14.0"  # Dawn requires iOS 14.0+ for C++ atomic wait/notify
 VISIONOS_MIN_VERSION = "1.0"
 
@@ -525,7 +530,23 @@ class SkiaBuildScript:
             gn_args += '\ncc_wrapper = "ccache"\n'
 
         if self.platform == "mac":
-            gn_args += f"target_cpu = \"{arch}\""
+            # Two separate build systems need the deployment target pinned:
+            #  1. Skia (GN): the extra_cflags/extra_asmflags -target below sets it.
+            #  2. Dawn: built through its OWN CMake sub-build (cmake_dawn/), which
+            #     does NOT inherit GN's extra_cflags. CMake initializes
+            #     CMAKE_OSX_DEPLOYMENT_TARGET from the MACOSX_DEPLOYMENT_TARGET env
+            #     var, so export it here — otherwise Dawn's objects default to the
+            #     build host's macOS (e.g. 15.0 on a macos-15 runner).
+            # Without both, Skia and Dawn end up with mismatched minos.
+            os.environ["MACOSX_DEPLOYMENT_TARGET"] = MAC_MIN_VERSION
+            gn_args += f'target_cpu = "{arch}"\n'
+            gn_args += f'''extra_cflags = [
+        "-target", "{arch}-apple-macos{MAC_MIN_VERSION}"
+    ]
+    extra_asmflags = [
+        "-target", "{arch}-apple-macos{MAC_MIN_VERSION}"
+    ]
+'''
         elif self.platform == "ios":
             cpu = "arm64" if arch == "arm64" else "x64"
             gn_args += f'target_cpu = "{cpu}"\n'

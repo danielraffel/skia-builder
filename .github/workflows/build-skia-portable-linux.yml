@@ -80,10 +80,18 @@ jobs:
             build-essential \
             git python3 python3-pip \
             curl file xz-utils bzip2 zip unzip tar \
-            locales pkg-config binutils ninja-build ccache cmake \
+            locales pkg-config binutils ccache cmake \
             libfontconfig1-dev libgl1-mesa-dev libglu1-mesa-dev \
             libx11-xcb-dev libxcb1-dev libxcb-xkb-dev libwayland-dev
-          git --version; cmake --version | head -1
+          # Ubuntu 22.04's apt ninja is 1.10.1, which lacks the `ninja -t inputs` tool
+          # (added in 1.11) that Skia's Dawn cmake_utils.py discover_dependencies calls
+          # via depot_tools' ninja (which delegates to PATH). Install ninja 1.12.1 into
+          # /usr/local/bin (ahead of /usr/bin). ubuntu-latest ships 1.11+, which is why
+          # the original lane works.
+          curl -fsSL https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-linux.zip -o /tmp/ninja.zip
+          unzip -o /tmp/ninja.zip -d /usr/local/bin
+          chmod +x /usr/local/bin/ninja
+          git --version; cmake --version | head -1; /usr/local/bin/ninja --version
           ln -sf /usr/bin/python3 /usr/local/bin/python || true
           python3 --version; ninja --version
           echo "system libstdc++ GLIBCXX:"; strings /usr/lib/x86_64-linux-gnu/libstdc++.so.6 \

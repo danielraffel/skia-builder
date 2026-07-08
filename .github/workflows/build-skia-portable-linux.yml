@@ -111,6 +111,11 @@ jobs:
           set -euo pipefail
           # depot_tools + build-skia.py clone into build/tmp; mark the workspace safe for git.
           git config --global --add safe.directory '*'
+          # git-sync-deps does many parallel fetches from *.googlesource.com; HTTP/2 in a
+          # container yields "fatal: remote transport reported error". Force HTTP/1.1 and a
+          # large post buffer (the standard googlesource-in-container fix).
+          git config --global http.version HTTP/1.1
+          git config --global http.postBuffer 524288000
           export PATH="/usr/lib/ccache:$PATH" || true
           python3 build-skia.py linux -variant gpu -config Release --shallow -branch "$SKIA_BRANCH"
       - name: Floor gate — link-probe glibc floor <= ${{ inputs.max_glibc || '2.35' }}

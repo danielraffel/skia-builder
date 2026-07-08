@@ -65,16 +65,25 @@ jobs:
         run: |
           set -euo pipefail
           apt-get update
+          apt-get install -y --no-install-recommends ca-certificates gnupg software-properties-common
+          # Ubuntu 22.04 ships git 2.34, whose HTTP/2 parallel-fetch bug makes Skia's
+          # tools/git-sync-deps fail with "fatal: remote transport reported error" against
+          # *.googlesource.com. depot_tools sets GIT_CONFIG_NOSYSTEM + its own HOME, so an
+          # http.version=HTTP/1.1 override doesn't reach it. Upgrade git from the git-core
+          # PPA (2.43+) instead — the bug is gone in the binary, no config needed.
+          add-apt-repository -y ppa:git-core/ppa
+          apt-get update
           # build-essential = C++20 gcc-11 toolchain (libstdc++ headers + GCC runtime) that
           # the link-probe and Skia's build need; the lib*-dev set is Skia's Linux GPU deps;
           # ninja-build + the rest are the build driver + LLVM download tooling.
           apt-get install -y --no-install-recommends \
             build-essential \
             git python3 python3-pip \
-            curl ca-certificates file xz-utils bzip2 zip unzip tar \
+            curl file xz-utils bzip2 zip unzip tar \
             locales pkg-config binutils ninja-build ccache \
             libfontconfig1-dev libgl1-mesa-dev libglu1-mesa-dev \
             libx11-xcb-dev libxcb1-dev libxcb-xkb-dev libwayland-dev
+          git --version
           ln -sf /usr/bin/python3 /usr/local/bin/python || true
           python3 --version; ninja --version
           echo "system libstdc++ GLIBCXX:"; strings /usr/lib/x86_64-linux-gnu/libstdc++.so.6 \

@@ -101,6 +101,13 @@ def apply_patches(skia_dir: Path):
   env = os.environ.copy()''',
             '''if target_os == "Darwin" or target_os == "iOS":
     configure_cmd.append(f"-DCMAKE_OSX_ARCHITECTURES={target_cpu}")
+    if target_os == "Darwin":
+      # macOS Dawn: pin the deployment target explicitly (iOS/visionOS below do
+      # the same). MACOSX_DEPLOYMENT_TARGET is exported by build-skia.py; without
+      # an explicit target Dawn's objects default to the build host's macOS.
+      _mac_min = os.environ.get("MACOSX_DEPLOYMENT_TARGET")
+      if _mac_min:
+        configure_cmd.append(f"-DCMAKE_OSX_DEPLOYMENT_TARGET={_mac_min}")
     if target_os == "iOS":
       # Get iOS/visionOS SDK settings
       if args.visionos:

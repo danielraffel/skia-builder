@@ -530,12 +530,16 @@ class SkiaBuildScript:
             gn_args += '\ncc_wrapper = "ccache"\n'
 
         if self.platform == "mac":
+            # Two separate build systems need the deployment target pinned:
+            #  1. Skia (GN): the extra_cflags/extra_asmflags -target below sets it.
+            #  2. Dawn: built through its OWN CMake sub-build (cmake_dawn/), which
+            #     does NOT inherit GN's extra_cflags. CMake initializes
+            #     CMAKE_OSX_DEPLOYMENT_TARGET from the MACOSX_DEPLOYMENT_TARGET env
+            #     var, so export it here — otherwise Dawn's objects default to the
+            #     build host's macOS (e.g. 15.0 on a macos-15 runner).
+            # Without both, Skia and Dawn end up with mismatched minos.
+            os.environ["MACOSX_DEPLOYMENT_TARGET"] = MAC_MIN_VERSION
             gn_args += f'target_cpu = "{arch}"\n'
-            # Pin the macOS deployment target explicitly (mirrors the iOS/visionOS
-            # branches). Skia's own libs pin their min internally, but Dawn has no
-            # internal default, so without this its objects inherit the CI runner's
-            # macOS as minos. extra_asmflags carries the same target so the ICU data
-            # object (icudtl_dat.o) gets correct platform metadata too.
             gn_args += f'''extra_cflags = [
         "-target", "{arch}-apple-macos{MAC_MIN_VERSION}"
     ]

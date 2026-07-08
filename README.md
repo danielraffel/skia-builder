@@ -66,10 +66,14 @@ tested against.
 | Windows | Skia GN default | Skia's `WINVER`/`_WIN32_WINNT` | Skia defaults |
 
 **To change the macOS minimum:** edit `MAC_MIN_VERSION` in `build-skia.py`, or set
-`MAC_DEPLOYMENT_TARGET` in the environment before building. Prior to this being
-applied, the mac path passed no `-target`, so Dawn's objects inherited the CI
-runner's macOS as their `minos` (Skia's own libs escaped this because Skia's GN
-pins its own macOS target internally).
+`MAC_DEPLOYMENT_TARGET` in the environment before building.
+
+**Two build systems, two levers (both driven by `MAC_MIN_VERSION`):** Skia is built
+by GN and takes the deployment target from the `-target` in `extra_cflags`. **Dawn is
+built by its own CMake sub-build (`cmake_dawn/`) and does not inherit GN flags** — it
+picks up the target from the `MACOSX_DEPLOYMENT_TARGET` environment variable, which the
+mac path exports. Before this, the mac path set neither, so Skia pinned its own internal
+min (~11) while Dawn's objects inherited the CI runner's macOS (e.g. 15.0 on macos-15).
 
 **Linux note:** the Linux build currently passes no `--sysroot`, so the resulting
 `.so` binds against the *build host's* glibc — i.e. the libraries require whatever

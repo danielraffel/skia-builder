@@ -53,32 +53,30 @@ in order to increase the number of files that can be opened at once.
 
 ## Minimum OS versions (deployment targets)
 
-The output libraries are built for these minimum OS versions. The values track
-Google's upstream, so they stay consistent with what Chrome/Dawn are built and
-tested against.
+A consumer that links these prebuilts inherits `max(Chromium's floor, its own
+toolchain constraints)`. These builds track Google's upstream floor and never ship
+*below* it; two platforms land slightly *above*, for the reasons noted.
 
-| Platform | Minimum | Set where | Tracks |
-|----------|---------|-----------|--------|
-| macOS | **13.0** (Ventura) | `MAC_MIN_VERSION` in `build-skia.py` (env `MAC_DEPLOYMENT_TARGET`); applied as `-target {arch}-apple-macos{MAC_MIN_VERSION}` on the mac path | Chromium `mac_deployment_target` in `build/config/mac/mac_sdk.gni` (12.0 @ M150, 13.0 @ M151) |
+| Platform | Minimum | Set where | Tracks / why |
+|----------|---------|-----------|--------------|
+| macOS | **13.0** (Ventura) | `MAC_MIN_VERSION` in `build-skia.py` (env `MAC_DEPLOYMENT_TARGET`); `-target {arch}-apple-macos{ver}` | Chromium `mac_deployment_target` (`build/config/mac/mac_sdk.gni`; 13.0 @ M151). *A consumer using `std::format` / `std::to_chars(float)` needs **13.3** — Apple's libc++ gates those above 13.0, not Skia.* |
 | iOS | 14.0 | `IOS_MIN_VERSION` (Dawn needs iOS 14+ for C++ atomic wait/notify) | Dawn iOS requirement |
 | visionOS | 1.0 | `VISIONOS_MIN_VERSION` | — |
-| Linux | host glibc (see note) | not yet pinned | — |
-| Windows | Skia GN default | Skia's `WINVER`/`_WIN32_WINNT` | Skia defaults |
+| Linux x64 | **glibc 2.34** | `portable-linux-x64` job in `build-skia.yml` (Ubuntu 22.04 container) | See Linux note. Chromium reaches ~2.28 via its own sysroot; we use a stock 22.04 base. Loadable on Ubuntu 22.04+ / Debian 12+ / RHEL 9+ / Fedora 35+. |
+| Windows | **Windows 10** (`_WIN32_WINNT` / `WINVER` `0x0A00`) | Skia/Dawn GN default | Chromium `build/config/win/BUILD.gn` |
 
-**To change the macOS minimum:** edit `MAC_MIN_VERSION` in `build-skia.py`, or set
-`MAC_DEPLOYMENT_TARGET` in the environment before building.
+**macOS — two build systems, two levers (both driven by `MAC_MIN_VERSION`):** Skia (GN)
+takes the target from `-target` in `extra_cflags`; **Dawn's separate CMake sub-build
+(`cmake_dawn/`) does not inherit GN flags** and reads `MACOSX_DEPLOYMENT_TARGET` from the
+environment, which the mac path exports. Set neither and Dawn's objects silently inherit
+the CI runner's macOS (e.g. 15.0), re-leaking the floor.
 
-**Two build systems, two levers (both driven by `MAC_MIN_VERSION`):** Skia is built
-by GN and takes the deployment target from the `-target` in `extra_cflags`. **Dawn is
-built by its own CMake sub-build (`cmake_dawn/`) and does not inherit GN flags** — it
-picks up the target from the `MACOSX_DEPLOYMENT_TARGET` environment variable, which the
-mac path exports. Before this, the mac path set neither, so Skia pinned its own internal
-min (~11) while Dawn's objects inherited the CI runner's macOS (e.g. 15.0 on macos-15).
-
-**Linux note:** the Linux build currently passes no `--sysroot`, so the resulting
-`.so` binds against the *build host's* glibc — i.e. the libraries require whatever
-glibc the build machine has. To get a predictable, low Linux floor, build against a
-pinned sysroot (as Chromium does with its Debian sysroot). Tracked as a follow-up.
+**Linux — why 2.34 and not lower:** the `portable-linux-x64` job builds in an
+`ubuntu:22.04` container (gcc-11), the oldest clean **C++20** base — Chromium's own sysroot
+breaks C++20 for Skia, and older bases (Rocky 8, Debian 11) fail on GLIBCXX / C++20. The
+default `ubuntu-latest` cell leaked glibc ~2.39; the container drops it to 2.34. The floor is
+*measured* by a `--whole-archive` link-probe over `libskia.a` + `libdawn_combined.a` (a static
+`.a`'s undefined glibc refs are unversioned until linked).
 
 ### Build for macOS universal (arm64 & x86_64 intel)
 

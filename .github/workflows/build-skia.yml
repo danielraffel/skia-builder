@@ -93,10 +93,9 @@ jobs:
             variant: gpu
             arch: x64
             config: Debug
-          - os: ubuntu-latest
-            platform: linux
-            variant: gpu
-            arch: x64
+          # linux/x64 is built by the dedicated `portable-linux-x64` job below
+          # (Ubuntu 22.04 container → glibc 2.34 floor). Building it here on
+          # ubuntu-latest leaked glibc ~2.39 into libskia.a/libdawn_combined.a.
           - os: ubuntu-latest
             platform: wasm
             variant: gpu
@@ -406,6 +405,146 @@ jobs:
         shell: bash
         run: echo "skia_branch=${SKIA_BRANCH}" >> "$GITHUB_OUTPUT"
 
+  # Portable Linux x64 Skia+Dawn, built in an Ubuntu 22.04 container so the shipped
+  # libskia.a / libdawn_combined.a carry a glibc 2.34 floor (loadable on Ubuntu 22.04+,
+  # Debian 12+, RHEL/Rocky 9+, Fedora 35+). The default ubuntu-latest matrix cell leaked
+  # ~2.39. 22.04 (gcc-11) is the oldest clean C++20 base for Skia's GN build. This job
+  # replaces the linux/x64 matrix cell and feeds the same `skia-build-linux-x64-gpu-release`
+  # artifact that create-release publishes. (arm64 is still the leaky matrix cell — a
+  # portable-linux-arm64 job is the tracked follow-up.)
+  portable-linux-x64:
+    if: ${{ inputs.platforms == 'all' || contains(inputs.platforms, 'linux') }}
+    runs-on: ubuntu-24.04
+    container:
+      image: ubuntu:22.04
+    # Plain bash (the `bash` shorthand adds -eo pipefail → `... | head` SIGPIPE-fails).
+    defaults:
+      run:
+        shell: "bash {0}"
+    env:
+      SKIA_BRANCH: ${{ inputs.skia_branch || 'chrome/m150' }}
+    steps:
+      - name: Install Ubuntu 22.04 build deps (no sudo — container runs as root)
+        if: ${{ !inputs.test_mode }}
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates gnupg software-properties-common
+          # Ubuntu 22.04 ships git 2.34, whose HTTP/2 parallel-fetch bug makes Skia's
+          # tools/git-sync-deps fail ("fatal: remote transport reported error") against
+          # *.googlesource.com. depot_tools sets GIT_CONFIG_NOSYSTEM + its own HOME, so an
+          # http.version=HTTP/1.1 override doesn't reach it. Upgrade git from the git-core
+          # PPA (2.43+) instead — the bug is gone in the binary, no config needed.
+          add-apt-repository -y ppa:git-core/ppa
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential \
+            git python3 python3-pip \
+            curl file xz-utils bzip2 zip unzip tar \
+            locales pkg-config binutils ccache cmake \
+            libfontconfig1-dev libgl1-mesa-dev libglu1-mesa-dev \
+            libx11-xcb-dev libxcb1-dev libxcb-xkb-dev libwayland-dev
+          # 22.04's apt ninja is 1.10.1, which lacks `ninja -t inputs` (added in 1.11) that
+          # Skia's Dawn cmake_utils.py discover_dependencies calls. Install 1.12.1 ahead of
+          # /usr/bin. ubuntu-latest ships 1.11+, which is why the original lane worked.
+          curl -fsSL https://github.com/ninja-build/ninja/releases/download/v1.12.1/ninja-linux.zip -o /tmp/ninja.zip
+          unzip -o /tmp/ninja.zip -d /usr/local/bin
+          chmod +x /usr/local/bin/ninja
+          ln -sf /usr/bin/python3 /usr/local/bin/python || true
+          git --version; cmake --version | head -1; /usr/local/bin/ninja --version
+      - name: Report build-host glibc (the guaranteed floor ceiling)
+        if: ${{ !inputs.test_mode }}
+        run: ldd --version | head -1
+      - uses: actions/checkout@v6
+      - name: Install LLVM and Clang ${{ env.LLVM_VERSION }} (Linux x64)
+        if: ${{ !inputs.test_mode }}
+        run: |
+          set -euo pipefail
+          package="LLVM-${LLVM_VERSION}-Linux-X64.tar.xz"
+          url="https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VERSION}/${package}"
+          install_dir="/opt/llvm-${LLVM_VERSION}"
+          mkdir -p "$install_dir"
+          curl -fsSL "$url" -o "/tmp/${package}"
+          tar -xJf "/tmp/${package}" --strip-components=1 -C "$install_dir"
+          echo "${install_dir}/bin" >> "$GITHUB_PATH"
+          {
+            echo "LLVM_PATH=${install_dir}"
+            echo "CC=${install_dir}/bin/clang"
+            echo "CXX=${install_dir}/bin/clang++"
+            echo "LD_LIBRARY_PATH=${install_dir}/lib:${LD_LIBRARY_PATH:-}"
+          } >> "$GITHUB_ENV"
+          "${install_dir}/bin/clang" --version
+      - name: Build Skia + Dawn (GPU, Release) in Ubuntu 22.04
+        if: ${{ !inputs.test_mode }}
+        env:
+          LANG: C.UTF-8
+          LC_ALL: C.UTF-8
+        run: |
+          set -euo pipefail
+          # --system config is honored regardless of depot_tools' HOME/git shim; HTTP/1.1 +
+          # large post buffer is the standard googlesource-in-container fix.
+          git config --system --add safe.directory '*'
+          git config --system http.version HTTP/1.1
+          git config --system http.postBuffer 524288000
+          git config --global --add safe.directory '*'
+          export PATH="/usr/lib/ccache:$PATH" || true
+          python3 build-skia.py linux -variant gpu -config Release --shallow -branch "$SKIA_BRANCH"
+      - name: Floor gate — link-probe glibc floor <= 2.34
+        if: ${{ !inputs.test_mode }}
+        run: |
+          set -uo pipefail
+          SKIA_A="$(find build/linux-gpu -name libskia.a | head -1)"
+          DAWN_A="$(find build/linux-gpu -name libdawn_combined.a | head -1)"
+          echo "libskia.a: $SKIA_A"; echo "libdawn_combined.a: $DAWN_A"
+          echo 'int main(void){return 0;}' > /tmp/probe.c
+          # --whole-archive forces every Skia/Dawn object in; --unresolved-symbols=ignore-all
+          # lets the probe link despite Skia-internal/system refs, so .gnu.version_r records
+          # the true glibc floor of the archives (static .a undefined refs are unversioned).
+          if clang++ /tmp/probe.c \
+               -Wl,--whole-archive "$SKIA_A" "$DAWN_A" -Wl,--no-whole-archive \
+               -Wl,--unresolved-symbols=ignore-all \
+               -lstdc++ -lm -lpthread -ldl -o /tmp/probe 2>/tmp/probe.err; then
+            objdump -T /tmp/probe | grep -oE 'GLIBC_[0-9.]+' | sort -V | uniq -c
+            HIGH="$(objdump -T /tmp/probe | grep -oE 'GLIBC_[0-9.]+' | sort -V | tail -1 | sed 's/GLIBC_//')"
+          else
+            echo "::warning::link-probe produced no exe; falling back to build-host glibc ceiling."
+            tail -5 /tmp/probe.err || true
+            HIGH="$(ldd --version | head -1 | grep -oE '[0-9]+\.[0-9]+$')"
+          fi
+          echo "probe floor: ${HIGH:-none}"
+          python3 - "$HIGH" "2.34" <<'PY'
+          import sys
+          def v(s): return tuple(int(x) for x in s.split('.'))
+          high, mx = sys.argv[1], sys.argv[2]
+          if not high:
+              print("no glibc symbols found — vacuously OK"); sys.exit(0)
+          if v(high) <= v(mx):
+              print(f"[glibc-floor] OK — floor {high} <= {mx}")
+          else:
+              print(f"[glibc-floor] FAIL — floor {high} > {mx}", file=sys.stderr); sys.exit(1)
+          PY
+      - name: Create dummy files for test mode
+        if: ${{ inputs.test_mode }}
+        run: |
+          mkdir -p build/include build/linux-gpu
+          echo "Test file" > build/include/test.h
+          echo "Test lib" > build/linux-gpu/test.lib
+          echo "GN args summary" > build/linux-gpu/gn_args.txt
+      - name: Package (skia-build-linux-x64-gpu-release.zip)
+        run: |
+          set -euo pipefail
+          PACKAGE_PATHS=(build/include build/linux-gpu)
+          [ -d build/share ] && PACKAGE_PATHS+=(build/share)
+          zip -r skia-build-linux-x64-gpu-release.zip "${PACKAGE_PATHS[@]}"
+          ls -la skia-build-linux-x64-gpu-release.zip
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: skia-build-linux-x64-gpu-release
+          path: skia-build-linux-x64-gpu-release.zip
+
   create-xcframework:
     needs: build-skia
     if: ${{ !inputs.skip_release && (inputs.platforms == 'all') }}
@@ -513,7 +652,7 @@ jobs:
 
   create-release:
     if: ${{ !inputs.skip_release && inputs.platforms == 'all' }}
-    needs: [build-skia, create-xcframework]
+    needs: [build-skia, create-xcframework, portable-linux-x64]
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts

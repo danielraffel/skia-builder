@@ -43,6 +43,22 @@ build-skia.py [-h] [-config {Debug,Release}] [-archs ARCHS] [-branch BRANCH] [--
 
 ## Building on macOS
 
+### Published macOS release assets
+
+Each release publishes **three** independent macOS GPU archives — do not assume
+Apple Silicon is the only one:
+
+| Asset | Arch | Use |
+|-------|------|-----|
+| `skia-build-mac-arm64-gpu-release.zip` | `arm64` | Apple Silicon only |
+| `skia-build-mac-x86_64-gpu-release.zip` | `x86_64` | Intel only |
+| `skia-build-mac-universal-gpu-release.zip` | `arm64;x86_64` | universal / lipo'd — links thin **or** fat |
+
+A consumer targeting `CMAKE_OSX_ARCHITECTURES=x86_64` should pull `mac-x86_64`
+(or the fat `mac-universal`, which links fine into a thin target); a universal
+build pulls `mac-universal`. All three ship every static lib (`libskia.a`,
+`libdawn_combined.a`, HarfBuzz/ICU/skparagraph/skottie/…) fat or thin to match.
+
 Note: you may need to call 
 
 ```bash

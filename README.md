@@ -136,6 +136,10 @@ write** permission. A classic personal access token instead needs the `repo` sco
 dispatch is intentionally after release creation, and the receiver is idempotent for an
 already-published exact milestone/V8 pair.
 
+Milestone release notes link to the corresponding [matched V8 releases](https://github.com/danielraffel/v8-builder/releases).
+The two releases form a tested Skia/Dawn/V8 tuple, but consumers can download only
+Skia/Dawn, only V8, or both.
+
 ### Workflow Inputs
 
 | Input | Description | Default |

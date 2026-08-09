@@ -658,11 +658,24 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v7
 
+      - name: Write release notes
+        env:
+          SKIA_RELEASE: ${{ needs.build-skia.outputs.skia_branch }}
+        run: |
+          set -euo pipefail
+          [[ "$SKIA_RELEASE" =~ ^chrome/m([0-9]+)$ ]]
+          milestone="${BASH_REMATCH[1]}"
+          cat > release-notes.md <<EOF
+          **Matched V8 release:** [V8 builds for M${milestone}](https://github.com/danielraffel/v8-builder/releases?q=v8-m${milestone})
+          Use either release independently, or both as the matched Skia/Dawn/V8 toolchain.
+
+          https://raw.githubusercontent.com/google/skia/${SKIA_RELEASE}/RELEASE_NOTES.md
+          EOF
+
       - name: Create Release
         uses: softprops/action-gh-release@v3
         with:
-          body: |
-            https://raw.githubusercontent.com/google/skia/${{ needs.build-skia.outputs.skia_branch }}/RELEASE_NOTES.md
+          body_path: release-notes.md
           tag_name: ${{ needs.build-skia.outputs.skia_branch }}${{ inputs.test_mode && '-test' || '' }}
           name: ${{ needs.build-skia.outputs.skia_branch }}${{ inputs.test_mode && ' (Test)' || '' }}
           draft: false

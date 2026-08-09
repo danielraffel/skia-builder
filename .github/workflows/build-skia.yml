@@ -689,17 +689,9 @@ jobs:
     needs: [build-skia, create-release]
     runs-on: ubuntu-24.04
     steps:
-      - name: Mint cross-repository GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ vars.V8_DISPATCH_APP_ID }}
-          private-key: ${{ secrets.V8_DISPATCH_APP_PRIVATE_KEY }}
-          owner: danielraffel
-          repositories: v8-builder
       - name: Trigger the matching milestone V8 release
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ secrets.V8_BUILDER_DISPATCH_TOKEN }}
           SKIA_RELEASE: ${{ needs.build-skia.outputs.skia_branch }}
         run: |
           set -euo pipefail

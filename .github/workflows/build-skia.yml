@@ -5,10 +5,10 @@ on:
   workflow_dispatch:
     inputs:
       skia_branch:
-        description: 'Skia branch to build (e.g., chrome/m150)'
+        description: 'Skia branch to build (e.g., chrome/m152)'
         required: false
         type: string
-        default: 'chrome/m150'
+        default: 'chrome/m152'
       platforms:
         description: 'Platforms to build (comma-separated, or "all")'
         required: false
@@ -35,7 +35,7 @@ on:
         default: macos-15
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.skia_branch || 'chrome/m150' }}-${{ inputs.platforms || 'all' }}-${{ inputs.skip_release && 'skip-release' || 'release' }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.skia_branch || 'chrome/m152' }}-${{ inputs.platforms || 'all' }}-${{ inputs.skip_release && 'skip-release' || 'release' }}
   cancel-in-progress: false
 
 env:
@@ -134,7 +134,7 @@ jobs:
           #   arch: ""
     runs-on: ${{ startsWith(matrix.os, 'macos') && (inputs.apple_runner || 'macos-15') || matrix.os }}
     env:
-      SKIA_BRANCH: ${{ inputs.skia_branch || 'chrome/m150' }}
+      SKIA_BRANCH: ${{ inputs.skia_branch || 'chrome/m152' }}
     outputs:
       skia_branch: ${{ steps.skia_branch.outputs.skia_branch }}
     steps:
@@ -422,7 +422,7 @@ jobs:
       run:
         shell: "bash {0}"
     env:
-      SKIA_BRANCH: ${{ inputs.skia_branch || 'chrome/m150' }}
+      SKIA_BRANCH: ${{ inputs.skia_branch || 'chrome/m152' }}
     steps:
       - name: Install Ubuntu 22.04 build deps (no sudo — container runs as root)
         if: ${{ !inputs.test_mode }}
@@ -683,3 +683,33 @@ jobs:
             ./Skia.xcframework/Skia.xcframework.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  trigger-matched-v8:
+    if: ${{ !inputs.skip_release && inputs.platforms == 'all' && !inputs.test_mode }}
+    needs: [build-skia, create-release]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Mint cross-repository GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.V8_DISPATCH_APP_ID }}
+          private-key: ${{ secrets.V8_DISPATCH_APP_PRIVATE_KEY }}
+          owner: danielraffel
+          repositories: v8-builder
+      - name: Trigger the matching milestone V8 release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SKIA_RELEASE: ${{ needs.build-skia.outputs.skia_branch }}
+        run: |
+          set -euo pipefail
+          [[ "$SKIA_RELEASE" =~ ^chrome/m([0-9]+)$ ]]
+          milestone="${BASH_REMATCH[1]}"
+          jq -n \
+            --arg event_type skia_milestone_published \
+            --arg milestone "$milestone" \
+            --arg skia_release_tag "$SKIA_RELEASE" \
+            '{event_type: $event_type, client_payload: {
+              milestone: $milestone,
+              skia_release_tag: $skia_release_tag
+            }}' | gh api --method POST repos/danielraffel/v8-builder/dispatches --input -

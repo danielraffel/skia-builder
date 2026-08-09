@@ -25,12 +25,12 @@ python3 build-skia.py xcframework                  # Apple XCFramework (macOS + 
 
 # Options
 python3 build-skia.py <platform> -config Debug    # Debug build (default: Release)
-python3 build-skia.py <platform> -branch chrome/m150  # Specific Skia branch
+python3 build-skia.py <platform> -branch chrome/m152  # Specific Skia branch
 python3 build-skia.py <platform> --shallow        # Shallow clone
 python3 build-skia.py <platform> -archs x86_64,arm64  # Specific architectures
 
 # Windows (use py -3 or the build-win.sh helper)
-py -3 build-skia.py win -config Release -branch chrome/m150
+py -3 build-skia.py win -config Release -branch chrome/m152
 ```
 
 **Makefile shortcuts (from macOS):**
@@ -100,7 +100,7 @@ The auto-update failure handoff has two watchdogs:
 - `.github/workflows/build-progress-watchdog.yml` polls active `Build Skia` runs so Codex is commented earlier when one matrix job has already failed, stayed queued too long, or stayed in progress long enough to look hung. This matters because `gh run view --log-failed` may not expose logs until the whole workflow completes; use the GitHub REST job-log endpoint for completed failed jobs in still-running workflows.
 
 **Workflow inputs:**
-- `skia_branch` - Skia branch to build (default: `chrome/m150`)
+- `skia_branch` - Skia branch to build (default: `chrome/m152`; update deliberately per release)
 - `platforms` - Platforms to build, comma-separated or `all` (default: `all`)
 - `skip_release` - Skip creating release, useful for testing (default: `false`)
 - `test_mode` - Skip actual build, create dummy files (default: `false`)
@@ -118,15 +118,15 @@ ghapp workflow run build-skia.yml -f platforms=visionos -f skip_release=true
 ghapp workflow run build-skia.yml -f platforms=mac,ios -f skip_release=true
 
 # Build with different Skia branch
-ghapp workflow run build-skia.yml -f skia_branch=chrome/m150
+ghapp workflow run build-skia.yml -f skia_branch=chrome/m152
 
 # Retry Apple builds on Intel macOS runners if macos-15 M1 jobs are stale queued
-ghapp workflow run build-skia.yml -f skia_branch=chrome/m150 -f platforms=all -f apple_runner=macos-15-intel
+ghapp workflow run build-skia.yml -f skia_branch=chrome/m152 -f platforms=all -f apple_runner=macos-15-intel
 
 # Check CI status
 ghapp run list
 ghapp run view <run-id> --log-failed
 
 # Create XCFramework from existing release (without rebuilding)
-ghapp workflow run create-xcframework.yml -f release_tag=chrome/m150
+ghapp workflow run create-xcframework.yml -f release_tag=chrome/m152
 ```

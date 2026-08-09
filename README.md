@@ -126,6 +126,14 @@ py -3 build-skia.py -config Release -branch chrome/m152 win
 
 The repository includes a GitHub Actions workflow (`.github/workflows/build-skia.yml`) that builds all platforms in parallel and creates releases tagged with the Skia branch name.
 
+After a full, non-test milestone release publishes, the workflow sends a
+`skia_milestone_published` dispatch to `danielraffel/v8-builder`. That repo resolves the
+matching Chromium milestone-branch V8 revision and publishes it through its sealed
+all-platform lane; its independent weekly LKGR releases continue unchanged. Configure
+the skia-builder Actions secret `V8_BUILDER_DISPATCH_TOKEN` with repository-dispatch
+permission on v8-builder. The dispatch is intentionally after release creation, and the
+receiver is idempotent for an already-published exact milestone/V8 pair.
+
 ### Workflow Inputs
 
 | Input | Description | Default |

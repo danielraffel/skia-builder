@@ -97,19 +97,19 @@ default `ubuntu-latest` cell leaked glibc ~2.39; the container drops it to 2.34.
 ### Build for macOS universal (arm64 & x86_64 intel)
 
 ```bash
-python3 build-skia.py -config Release -branch chrome/m150 mac
+python3 build-skia.py -config Release -branch chrome/m152 mac
 ```
 
 ### Build for iOS (including x86_64 simulator)
 
 ```bash
-python3 build-skia.py -config Release -branch chrome/m150 ios
+python3 build-skia.py -config Release -branch chrome/m152 ios
 ```
 
 ### Build an XCFramework
 
 ```bash
-python3 build-skia.py -config Release -branch chrome/m150 xcframework
+python3 build-skia.py -config Release -branch chrome/m152 xcframework
 ```
 
 ## Building on Windows 
@@ -119,7 +119,7 @@ On Windows, you need to install LLVM in order to compile Skia with clang, as rec
 LLVM should be installed in `C:\Program Files\LLVM\`
 
 ```bash
-py -3 build-skia.py -config Release -branch chrome/m150 win
+py -3 build-skia.py -config Release -branch chrome/m152 win
 ```
 
 ## CI / GitHub Actions
@@ -130,7 +130,7 @@ The repository includes a GitHub Actions workflow (`.github/workflows/build-skia
 
 | Input | Description | Default |
 |-------|-------------|---------|
-| `skia_branch` | Skia branch to build | `chrome/m150` |
+| `skia_branch` | Skia branch to build | `chrome/m152` |
 | `platforms` | Platforms to build (comma-separated or `all`) | `all` |
 | `skip_release` | Skip creating release | `false` |
 | `test_mode` | Skip build, create dummy files | `false` |
@@ -148,10 +148,10 @@ gh workflow run build-skia.yml -f platforms=mac,ios -f skip_release=true
 gh workflow run build-skia.yml -f platforms=win -f skip_release=true
 
 # Build with a different Skia branch
-gh workflow run build-skia.yml -f skia_branch=chrome/m150
+gh workflow run build-skia.yml -f skia_branch=chrome/m152
 
 # Retry Apple builds on the Intel macOS runner if GitHub's M1 runners are stalled
-gh workflow run build-skia.yml -f skia_branch=chrome/m150 -f platforms=all -f apple_runner=macos-15-intel
+gh workflow run build-skia.yml -f skia_branch=chrome/m152 -f platforms=all -f apple_runner=macos-15-intel
 ```
 
 ### Automatic Skia Updates
@@ -168,7 +168,7 @@ To verify the watcher without starting the full build matrix, run it in dry-run 
 
 ```bash
 # Should report no dispatch when the release already exists
-gh workflow run watch-skia.yml -f skia_branch=chrome/m150 -f dry_run=true
+gh workflow run watch-skia.yml -f skia_branch=chrome/m152 -f dry_run=true
 
 # Should report that a build would be dispatched when the release is missing
 gh workflow run watch-skia.yml -f skia_branch=chrome/m148 -f dry_run=true
@@ -192,7 +192,7 @@ gh run view <run-id> --log-failed
 If you've already built all platforms, you can create an XCFramework without rebuilding:
 
 ```bash
-gh workflow run create-xcframework.yml -f release_tag=chrome/m150
+gh workflow run create-xcframework.yml -f release_tag=chrome/m152
 ```
 
 This downloads mac, ios, and visionos artifacts from the specified release and creates a combined XCFramework.

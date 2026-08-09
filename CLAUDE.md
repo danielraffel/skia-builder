@@ -99,6 +99,11 @@ The auto-update failure handoff has two watchdogs:
 - `.github/workflows/build-failure-watchdog.yml` fires when the whole `Build Skia` workflow completes with failure.
 - `.github/workflows/build-progress-watchdog.yml` polls active `Build Skia` runs so Codex is commented earlier when one matrix job has already failed, stayed queued too long, or stayed in progress long enough to look hung. This matters because `gh run view --log-failed` may not expose logs until the whole workflow completes; use the GitHub REST job-log endpoint for completed failed jobs in still-running workflows.
 
+A successful full non-test milestone release dispatches `skia_milestone_published` to
+`danielraffel/v8-builder`, using the `V8_BUILDER_DISPATCH_TOKEN` Actions secret. The V8
+receiver resolves and publishes the milestone-matched V8 independently; its weekly LKGR
+lane remains separate.
+
 **Workflow inputs:**
 - `skia_branch` - Skia branch to build (default: `chrome/m152`; update deliberately per release)
 - `platforms` - Platforms to build, comma-separated or `all` (default: `all`)

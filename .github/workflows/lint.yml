@@ -11,6 +11,8 @@ on:
       - 'patches/apply_dawn_ios_visionos.py'
       - 'patches/test_apply_dawn_ios_visionos.py'
       - 'tools/check_release_coverage.py'
+      - 'tools/skia_release_lock.py'
+      - 'tools/test_skia_release_lock.py'
   push:
     branches: [main]
     paths:
@@ -19,6 +21,8 @@ on:
       - 'patches/apply_dawn_ios_visionos.py'
       - 'patches/test_apply_dawn_ios_visionos.py'
       - 'tools/check_release_coverage.py'
+      - 'tools/skia_release_lock.py'
+      - 'tools/test_skia_release_lock.py'
   workflow_dispatch:
 
 jobs:
@@ -34,3 +38,5 @@ jobs:
       # Catches the chrome/m150 regression: a lane built but never released.
       - run: python3 tools/check_release_coverage.py
       - run: python3 patches/test_apply_dawn_ios_visionos.py
+      - run: python3 tools/test_skia_release_lock.py
+      - run: python3 -m py_compile build-skia.py tools/skia_release_lock.py

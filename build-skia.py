@@ -38,6 +38,7 @@ SOFTWARE.
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -417,6 +418,7 @@ class SkiaBuildScript:
         parser.add_argument("-config", choices=["Debug", "Release"], default="Release", help="Build configuration")
         parser.add_argument("-archs", help="Target architectures (comma-separated)")
         parser.add_argument("-branch", help="Skia Git branch to checkout", default="main")
+        parser.add_argument("-revision", help="Immutable Skia commit to build (40 hex characters)")
         parser.add_argument("-variant", choices=["cpu", "gpu"], default="gpu",
                            help="Build variant: cpu (no GPU) or gpu (with Graphite/Dawn)")
         parser.add_argument("-target", choices=["device", "simulator", "all"], default="all",
@@ -442,6 +444,9 @@ class SkiaBuildScript:
                 self.archs = self.get_default_archs()
 
         self.branch = args.branch
+        self.revision = args.revision
+        if self.revision and not re.fullmatch(r"[0-9a-f]{40}", self.revision):
+            parser.error("-revision must be a full 40-character lowercase commit SHA")
         self.variant = args.variant
         self.target = args.target
         self.shallow_clone = args.shallow
@@ -1085,7 +1090,10 @@ class SkiaBuildScript:
         colored_print("Cleaned up temporary directories", Colors.OKBLUE)
 
     def setup_skia_repo(self):
-        colored_print(f"Setting up Skia repository (branch: {self.branch})...", Colors.OKBLUE)
+        target = self.revision or self.branch
+        colored_print(
+            f"Setting up Skia repository (branch: {self.branch}, target: {target})...",
+            Colors.OKBLUE)
         if not SKIA_SRC_DIR.exists():
             clone_command = ["git", "clone"]
             if self.shallow_clone:
@@ -1097,10 +1105,21 @@ class SkiaBuildScript:
             fetch_command = ["git", "fetch"]
             if self.shallow_clone:
                 fetch_command.extend(["--depth", "1"])
-            fetch_command.extend(["origin", self.branch])
+            fetch_command.extend(["origin", self.revision or self.branch])
             subprocess.run(fetch_command, check=True)
+        os.chdir(SKIA_SRC_DIR)
+        if self.revision:
+            subprocess.run(["git", "fetch", "--depth", "1", "origin", self.revision], check=True)
+            subprocess.run(["git", "checkout", "--detach", self.revision], check=True)
+        else:
             subprocess.run(["git", "checkout", self.branch], check=True)
             subprocess.run(["git", "reset", "--hard", f"origin/{self.branch}"], check=True)
+        actual = subprocess.run(
+            ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+        ).stdout.strip()
+        if self.revision and actual != self.revision:
+            raise SystemExit(f"Skia revision mismatch: expected {self.revision}, got {actual}")
+        colored_print(f"Pinned Skia revision: {actual}", Colors.OKGREEN)
         colored_print("Skia repository setup complete.", Colors.OKGREEN)
 
     def setup_gn_for_windows_arm64(self):

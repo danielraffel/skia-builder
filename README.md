@@ -126,6 +126,9 @@ py -3 build-skia.py -config Release -branch chrome/m152 win
 
 The repository includes a GitHub Actions workflow (`.github/workflows/build-skia.yml`) that builds all platforms in parallel and creates releases tagged with the Skia branch name.
 
+Before the build matrix starts, the workflow resolves the milestone branch once and pins
+every platform to that immutable Skia SHA. The release includes
+`skia-release-lock.json`, which records the exact Skia and Skia-DEPS Dawn revisions.
 After a full, non-test milestone release publishes, the workflow sends a
 `skia_milestone_published` dispatch to `danielraffel/v8-builder`. That repo resolves the
 matching Chromium milestone-branch V8 revision and publishes it through its sealed
@@ -133,8 +136,8 @@ all-platform lane; its independent weekly LKGR releases continue unchanged. Conf
 the skia-builder Actions secret `V8_BUILDER_DISPATCH_TOKEN` with a fine-grained personal
 access token that can access `danielraffel/v8-builder` and has repository **Contents:
 write** permission. A classic personal access token instead needs the `repo` scope. The
-dispatch is intentionally after release creation, and the receiver is idempotent for an
-already-published exact milestone/V8 pair.
+dispatch is intentionally after release creation and carries the immutable producer lock.
+The receiver is idempotent for complete releases and already-active matching builds.
 
 Milestone release notes link to the corresponding [matched V8 releases](https://github.com/danielraffel/v8-builder/releases).
 The two releases form a tested Skia/Dawn/V8 tuple, but consumers can download only

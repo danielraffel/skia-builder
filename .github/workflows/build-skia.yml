@@ -46,7 +46,31 @@ permissions:
   contents: write
 
 jobs:
+  resolve-skia:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.lock.outputs.tag }}
+      milestone: ${{ steps.lock.outputs.milestone }}
+      skia: ${{ steps.lock.outputs.skia }}
+      dawn: ${{ steps.lock.outputs.dawn }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Resolve immutable Skia/Dawn release lock
+        id: lock
+        env:
+          SKIA_BRANCH: ${{ inputs.skia_branch || 'chrome/m152' }}
+        run: |
+          python3 tools/skia_release_lock.py "$SKIA_BRANCH" \
+            --output skia-release-lock.json \
+            --github-output "$GITHUB_OUTPUT"
+      - name: Upload immutable release lock
+        uses: actions/upload-artifact@v7
+        with:
+          name: skia-release-lock
+          path: skia-release-lock.json
+
   build-skia:
+    needs: resolve-skia
     strategy:
       fail-fast: false
       matrix:
@@ -134,9 +158,8 @@ jobs:
           #   arch: ""
     runs-on: ${{ startsWith(matrix.os, 'macos') && (inputs.apple_runner || 'macos-15') || matrix.os }}
     env:
-      SKIA_BRANCH: ${{ inputs.skia_branch || 'chrome/m152' }}
-    outputs:
-      skia_branch: ${{ steps.skia_branch.outputs.skia_branch }}
+      SKIA_BRANCH: ${{ needs.resolve-skia.outputs.tag }}
+      SKIA_REVISION: ${{ needs.resolve-skia.outputs.skia }}
     steps:
       - name: Check if platform should build
         id: check
@@ -335,7 +358,7 @@ jobs:
         shell: bash
         run: |
           CONFIG="${{ matrix.config || 'Release' }}"
-          BUILD_ARGS=(build-skia.py "${{ matrix.platform }}" -variant "${{ matrix.variant }}" -config "$CONFIG" --shallow -branch "$SKIA_BRANCH")
+          BUILD_ARGS=(build-skia.py "${{ matrix.platform }}" -variant "${{ matrix.variant }}" -config "$CONFIG" --shallow -branch "$SKIA_BRANCH" -revision "$SKIA_REVISION")
           if [ -n "${{ matrix.arch }}" ]; then
             BUILD_ARGS+=(-archs "${{ matrix.arch }}")
           fi
@@ -399,12 +422,6 @@ jobs:
           name: ${{ steps.archive.outputs.name }}
           path: ${{ steps.archive.outputs.name }}.zip
 
-      - name: Set SKIA_BRANCH output
-        id: skia_branch
-        if: steps.check.outputs.should_build == 'true'
-        shell: bash
-        run: echo "skia_branch=${SKIA_BRANCH}" >> "$GITHUB_OUTPUT"
-
   # Portable Linux x64 Skia+Dawn, built in an Ubuntu 22.04 container so the shipped
   # libskia.a / libdawn_combined.a carry a glibc 2.34 floor (loadable on Ubuntu 22.04+,
   # Debian 12+, RHEL/Rocky 9+, Fedora 35+). The default ubuntu-latest matrix cell leaked
@@ -413,6 +430,7 @@ jobs:
   # artifact that create-release publishes. (arm64 is still the leaky matrix cell — a
   # portable-linux-arm64 job is the tracked follow-up.)
   portable-linux-x64:
+    needs: resolve-skia
     if: ${{ inputs.platforms == 'all' || contains(inputs.platforms, 'linux') }}
     runs-on: ubuntu-24.04
     container:
@@ -422,7 +440,8 @@ jobs:
       run:
         shell: "bash {0}"
     env:
-      SKIA_BRANCH: ${{ inputs.skia_branch || 'chrome/m152' }}
+      SKIA_BRANCH: ${{ needs.resolve-skia.outputs.tag }}
+      SKIA_REVISION: ${{ needs.resolve-skia.outputs.skia }}
     steps:
       - name: Install Ubuntu 22.04 build deps (no sudo — container runs as root)
         if: ${{ !inputs.test_mode }}
@@ -490,7 +509,8 @@ jobs:
           git config --system http.postBuffer 524288000
           git config --global --add safe.directory '*'
           export PATH="/usr/lib/ccache:$PATH" || true
-          python3 build-skia.py linux -variant gpu -config Release --shallow -branch "$SKIA_BRANCH"
+          python3 build-skia.py linux -variant gpu -config Release --shallow \
+            -branch "$SKIA_BRANCH" -revision "$SKIA_REVISION"
       - name: Floor gate — link-probe glibc floor <= 2.34
         if: ${{ !inputs.test_mode }}
         run: |
@@ -652,7 +672,7 @@ jobs:
 
   create-release:
     if: ${{ !inputs.skip_release && inputs.platforms == 'all' }}
-    needs: [build-skia, create-xcframework, portable-linux-x64]
+    needs: [resolve-skia, build-skia, create-xcframework, portable-linux-x64]
     runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
@@ -660,7 +680,7 @@ jobs:
 
       - name: Write release notes
         env:
-          SKIA_RELEASE: ${{ needs.build-skia.outputs.skia_branch }}
+          SKIA_RELEASE: ${{ needs.resolve-skia.outputs.tag }}
         run: |
           set -euo pipefail
           [[ "$SKIA_RELEASE" =~ ^chrome/m([0-9]+)$ ]]
@@ -676,8 +696,8 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           body_path: release-notes.md
-          tag_name: ${{ needs.build-skia.outputs.skia_branch }}${{ inputs.test_mode && '-test' || '' }}
-          name: ${{ needs.build-skia.outputs.skia_branch }}${{ inputs.test_mode && ' (Test)' || '' }}
+          tag_name: ${{ needs.resolve-skia.outputs.tag }}${{ inputs.test_mode && '-test' || '' }}
+          name: ${{ needs.resolve-skia.outputs.tag }}${{ inputs.test_mode && ' (Test)' || '' }}
           draft: false
           prerelease: ${{ inputs.test_mode }}
           files: |
@@ -694,18 +714,21 @@ jobs:
             ./skia-build-linux-arm64-gpu-release/skia-build-linux-arm64-gpu-release.zip
             ./skia-build-wasm-wasm32-gpu-release/skia-build-wasm-wasm32-gpu-release.zip
             ./Skia.xcframework/Skia.xcframework.zip
+            ./skia-release-lock/skia-release-lock.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   trigger-matched-v8:
     if: ${{ !inputs.skip_release && inputs.platforms == 'all' && !inputs.test_mode }}
-    needs: [build-skia, create-release]
+    needs: [resolve-skia, create-release]
     runs-on: ubuntu-24.04
     steps:
       - name: Trigger the matching milestone V8 release
         env:
           GH_TOKEN: ${{ secrets.V8_BUILDER_DISPATCH_TOKEN }}
-          SKIA_RELEASE: ${{ needs.build-skia.outputs.skia_branch }}
+          SKIA_RELEASE: ${{ needs.resolve-skia.outputs.tag }}
+          BUILT_SKIA: ${{ needs.resolve-skia.outputs.skia }}
+          BUILT_DAWN: ${{ needs.resolve-skia.outputs.dawn }}
         run: |
           set -euo pipefail
           [[ "$SKIA_RELEASE" =~ ^chrome/m([0-9]+)$ ]]
@@ -714,7 +737,11 @@ jobs:
             --arg event_type skia_milestone_published \
             --arg milestone "$milestone" \
             --arg skia_release_tag "$SKIA_RELEASE" \
+            --arg skia "$BUILT_SKIA" \
+            --arg dawn "$BUILT_DAWN" \
             '{event_type: $event_type, client_payload: {
               milestone: $milestone,
-              skia_release_tag: $skia_release_tag
+              skia_release_tag: $skia_release_tag,
+              skia: $skia,
+              dawn: $dawn
             }}' | gh api --method POST repos/danielraffel/v8-builder/dispatches --input -

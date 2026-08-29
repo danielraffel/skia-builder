@@ -6,3 +6,5 @@ example/.cache
 .vs
 example/build-*
 .claude/
+__pycache__/
+*.pyc

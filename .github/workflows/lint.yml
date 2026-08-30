@@ -7,22 +7,28 @@ on:
   pull_request:
     paths:
       - '.github/workflows/build-skia.yml'
+      - '.github/workflows/watch-skia.yml'
       - '.github/workflows/lint.yml'
       - 'patches/apply_dawn_ios_visionos.py'
       - 'patches/test_apply_dawn_ios_visionos.py'
       - 'tools/check_release_coverage.py'
       - 'tools/skia_release_lock.py'
       - 'tools/test_skia_release_lock.py'
+      - 'tools/matched_v8_link.py'
+      - 'tools/test_matched_v8_link.py'
   push:
     branches: [main]
     paths:
       - '.github/workflows/build-skia.yml'
+      - '.github/workflows/watch-skia.yml'
       - '.github/workflows/lint.yml'
       - 'patches/apply_dawn_ios_visionos.py'
       - 'patches/test_apply_dawn_ios_visionos.py'
       - 'tools/check_release_coverage.py'
       - 'tools/skia_release_lock.py'
       - 'tools/test_skia_release_lock.py'
+      - 'tools/matched_v8_link.py'
+      - 'tools/test_matched_v8_link.py'
   workflow_dispatch:
 
 jobs:
@@ -39,4 +45,5 @@ jobs:
       - run: python3 tools/check_release_coverage.py
       - run: python3 patches/test_apply_dawn_ios_visionos.py
       - run: python3 tools/test_skia_release_lock.py
-      - run: python3 -m py_compile build-skia.py tools/skia_release_lock.py
+      - run: python3 tools/test_matched_v8_link.py
+      - run: python3 -m py_compile build-skia.py tools/skia_release_lock.py tools/matched_v8_link.py

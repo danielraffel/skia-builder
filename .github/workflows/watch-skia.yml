@@ -93,3 +93,26 @@ jobs:
               echo "- Result: dispatched \`build-skia.yml\`"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  reconcile-matched-v8-links:
+    # The exact V8 tag is not known when Skia publishes. Reconcile after the
+    # matched build completes without giving v8-builder cross-repo write access.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Reconcile exact matched V8 release links
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--skia-repo "$GITHUB_REPOSITORY")
+          if [ "$DRY_RUN" = true ]; then
+            args+=(--dry-run)
+          fi
+          python3 tools/matched_v8_link.py "${args[@]}"

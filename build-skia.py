@@ -503,6 +503,18 @@ class SkiaBuildScript:
             subprocess.run(["git", "clone", DEPOT_TOOLS_URL, str(DEPOT_TOOLS_PATH)], check=True)
         os.environ["PATH"] = f"{DEPOT_TOOLS_PATH}:{os.environ['PATH']}"
 
+        # Recent depot_tools checkouts ship their Python wrapper uninitialized.
+        # Without this bootstrap, GN/Ninja actions fail with
+        # "python3_bin_reldir.txt not found" on a fresh CI cache.
+        if os.name == "nt":
+            bootstrap = DEPOT_TOOLS_PATH / "update_depot_tools.bat"
+            if bootstrap.exists():
+                subprocess.run(["cmd", "/c", str(bootstrap)], check=True)
+        else:
+            bootstrap = DEPOT_TOOLS_PATH / "ensure_bootstrap"
+            if bootstrap.exists():
+                subprocess.run([str(bootstrap)], check=True)
+
     def sync_deps(self):
         os.chdir(SKIA_SRC_DIR)
         colored_print("Syncing Deps...", Colors.OKBLUE)
@@ -1254,6 +1266,29 @@ class SkiaBuildScript:
         # Apply .patch files using git apply
         for patch_file in sorted(patches_dir.glob("*.patch")):
             colored_print(f"Applying patch: {patch_file.name}", Colors.OKBLUE)
+
+            # Skia integrated this D3D compatibility change upstream in M152.
+            # Keep the patch for older branches, but avoid treating its stale
+            # context as a build warning on M152 and later.
+            if patch_file.name == "fix_d3d_backend_surface.patch":
+                d3d_surface = SKIA_SRC_DIR / "src/gpu/ganesh/d3d/GrD3DBackendSurface.cpp"
+                if d3d_surface.exists():
+                    source = d3d_surface.read_text()
+                    format_guarded = re.search(
+                        r"#if defined\(GPU_TEST_UTILS\)\s+bool equal\(const GrBackendFormatData",
+                        source,
+                    )
+                    texture_guarded = re.search(
+                        r"#if defined\(GPU_TEST_UTILS\)\s+bool equal\(const GrBackendTextureData",
+                        source,
+                    )
+                    if not format_guarded and texture_guarded:
+                        colored_print(
+                            "  D3D compatibility change already integrated upstream, skipping.",
+                            Colors.OKCYAN,
+                        )
+                        continue
+
             try:
                 # Check if patch is already applied
                 result = subprocess.run(

@@ -74,102 +74,58 @@ jobs:
           name: skia-release-lock
           path: skia-release-lock.json
 
-  build-skia:
+  select-matrix:
     needs: resolve-skia
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - name: Select requested build cells
+        id: select
+        env:
+          PLATFORMS: ${{ inputs.platforms || 'all' }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+
+          cells = [
+              {"os":"macos-15", "platform":"mac", "variant":"gpu", "arch":"universal"},
+              {"os":"macos-15", "platform":"mac", "variant":"gpu", "arch":"arm64"},
+              {"os":"macos-15", "platform":"mac", "variant":"gpu", "arch":"x86_64"},
+              {"os":"macos-15", "platform":"ios", "variant":"gpu", "arch":"arm64", "target":"device"},
+              {"os":"macos-15", "platform":"ios", "variant":"gpu", "arch":"arm64,x86_64", "target":"simulator"},
+              {"os":"macos-15", "platform":"visionos", "variant":"gpu", "arch":"arm64", "target":"device"},
+              {"os":"macos-15", "platform":"visionos", "variant":"gpu", "arch":"arm64", "target":"simulator"},
+              {"os":"windows-2022", "platform":"win", "variant":"gpu", "arch":"x64", "config":"Release"},
+              {"os":"windows-2022", "platform":"win", "variant":"gpu", "arch":"x64", "config":"Debug"},
+              {"os":"windows-11-arm", "platform":"win", "selector":"win-arm64", "variant":"gpu", "arch":"arm64", "config":"Release"},
+              {"os":"ubuntu-latest", "platform":"wasm", "variant":"gpu", "arch":"wasm32", "config":"Release"},
+              {"os":"ubuntu-24.04-arm", "platform":"linux", "variant":"gpu", "arch":"arm64"},
+          ]
+          requested = os.environ["PLATFORMS"].strip()
+          if requested in ("", "all"):
+              selected = cells
+          else:
+              selectors = {part.strip() for part in requested.split(",") if part.strip()}
+              selected = [
+                  cell for cell in cells
+                  if cell.get("selector", cell["platform"]) in selectors
+                  or (cell["platform"] in selectors and cell.get("selector") is None)
+              ]
+          if not selected:
+              raise SystemExit(f"No build cells selected for platforms={requested!r}")
+          payload = json.dumps({"include": selected}, separators=(",", ":"))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"matrix={payload}\n")
+          print(f"Selected {len(selected)} build cell(s) for {requested}: " + ", ".join(
+              cell.get("selector", cell["platform"]) for cell in selected))
+          PY
+
+  build-skia:
+    needs: [resolve-skia, select-matrix]
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: macos-15
-            platform: mac
-            variant: gpu
-            arch: "universal"
-          - os: macos-15
-            platform: mac
-            variant: gpu
-            arch: "arm64"
-          - os: macos-15
-            platform: mac
-            variant: gpu
-            arch: "x86_64"
-          - os: macos-15
-            platform: ios
-            variant: gpu
-            arch: "arm64"
-            target: "device"
-          - os: macos-15
-            platform: ios
-            variant: gpu
-            arch: "arm64,x86_64"
-            target: "simulator"
-          - os: macos-15
-            platform: visionos
-            variant: gpu
-            arch: "arm64"
-            target: "device"
-          - os: macos-15
-            platform: visionos
-            variant: gpu
-            arch: "arm64"
-            target: "simulator"
-          - os: windows-2022
-            platform: win
-            variant: gpu
-            arch: x64
-            config: Release
-          - os: windows-2022
-            platform: win
-            variant: gpu
-            arch: x64
-            config: Debug
-          # Native ARM64 Windows GPU/Skia artifact for Windows on Apple Silicon.
-          # The runner uses clang/LLVM's Windows-on-ARM toolchain and the build
-          # script disables OpenGL for this target in favor of Dawn/Direct3D.
-          - os: windows-11-arm
-            platform: win
-            selector: win-arm64
-            variant: gpu
-            arch: arm64
-            config: Release
-          # linux/x64 is built by the dedicated `portable-linux-x64` job below
-          # (Ubuntu 22.04 container → glibc 2.34 floor). Building it here on
-          # ubuntu-latest leaked glibc ~2.39 into libskia.a/libdawn_combined.a.
-          - os: ubuntu-latest
-            platform: wasm
-            variant: gpu
-            arch: "wasm32"
-            config: Release
-
-          # ARM64 platforms
-          - os: ubuntu-24.04-arm
-            platform: linux
-            variant: gpu
-            arch: arm64
-          # - os: windows-11-arm
-          #   platform: win
-          #   variant: gpu
-          #   arch: arm64
-          # CPU variants
-          # - os: macos-15
-          #   platform: mac
-          #   variant: cpu
-          #   arch: ""
-          # - os: windows-2022
-          #   platform: win
-          #   variant: cpu
-          #   arch: x64
-          # - os: ubuntu-24.04
-          #   platform: linux
-          #   variant: cpu
-          #   arch: x64
-          # - os: ubuntu-latest
-          #   platform: wasm
-          #   variant: cpu
-          #   arch: ""
-          # - os: macos-15
-          #   platform: ios
-          #   variant: cpu
-          #   arch: ""
+      matrix: ${{ fromJSON(needs.select-matrix.outputs.matrix) }}
     runs-on: ${{ startsWith(matrix.os, 'macos') && (inputs.apple_runner || 'macos-15') || matrix.os }}
     env:
       SKIA_BRANCH: ${{ needs.resolve-skia.outputs.tag }}

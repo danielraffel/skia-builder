@@ -24,6 +24,11 @@ on:
         required: false
         type: boolean
         default: false
+      release_tag:
+        description: 'Existing release tag to receive a selected backfill asset (for example chrome/m153)'
+        required: false
+        type: string
+        default: ''
       apple_runner:
         description: 'GitHub-hosted macOS runner label for Apple builds'
         required: false
@@ -117,6 +122,15 @@ jobs:
             variant: gpu
             arch: x64
             config: Debug
+          # Native ARM64 Windows GPU/Skia artifact for Windows on Apple Silicon.
+          # The runner uses clang/LLVM's Windows-on-ARM toolchain and the build
+          # script disables OpenGL for this target in favor of Dawn/Direct3D.
+          - os: windows-11-arm
+            platform: win
+            selector: win-arm64
+            variant: gpu
+            arch: arm64
+            config: Release
           # linux/x64 is built by the dedicated `portable-linux-x64` job below
           # (Ubuntu 22.04 container → glibc 2.34 floor). Building it here on
           # ubuntu-latest leaked glibc ~2.39 into libskia.a/libdawn_combined.a.
@@ -166,12 +180,16 @@ jobs:
         shell: bash
         run: |
           PLATFORMS="${{ inputs.platforms || 'all' }}"
-          if [[ "$PLATFORMS" == "all" ]] || [[ "$PLATFORMS" == *"${{ matrix.platform }}"* ]]; then
+          SELECTOR="${{ matrix.selector || matrix.platform }}"
+          case ",$PLATFORMS," in
+            *,all,*|*,"$SELECTOR",*)
             echo "should_build=true" >> "$GITHUB_OUTPUT"
-          else
+            ;;
+            *)
             echo "should_build=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping ${{ matrix.platform }} (not in platforms: $PLATFORMS)"
-          fi
+            echo "Skipping $SELECTOR (not in platforms: $PLATFORMS)"
+            ;;
+          esac
 
       - name: Checkout repository
         if: steps.check.outputs.should_build == 'true'
@@ -710,6 +728,7 @@ jobs:
             ./skia-build-visionos-simulator-arm64-gpu-release/skia-build-visionos-simulator-arm64-gpu-release.zip
             ./skia-build-win-x64-gpu-release/skia-build-win-x64-gpu-release.zip
             ./skia-build-win-x64-gpu-debug/skia-build-win-x64-gpu-debug.zip
+            ./skia-build-win-arm64-gpu-release/skia-build-win-arm64-gpu-release.zip
             ./skia-build-linux-x64-gpu-release/skia-build-linux-x64-gpu-release.zip
             ./skia-build-linux-arm64-gpu-release/skia-build-linux-arm64-gpu-release.zip
             ./skia-build-wasm-wasm32-gpu-release/skia-build-wasm-wasm32-gpu-release.zip
@@ -717,6 +736,30 @@ jobs:
             ./skia-release-lock/skia-release-lock.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Backfill a single ARM64 Windows asset into an existing milestone release
+  # without rebuilding the other platform archives. This keeps the normal
+  # all-platform release path unchanged while allowing m153 and later tags to
+  # gain the ARM64 artifact independently.
+  publish-windows-arm64-backfill:
+    if: ${{ !inputs.skip_release && inputs.platforms == 'win-arm64' && inputs.release_tag != '' }}
+    needs: [build-skia]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download ARM64 Windows artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: skia-build-win-arm64-gpu-release
+          path: artifact
+      - name: Upload ARM64 Windows asset to existing release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          asset="artifact/skia-build-win-arm64-gpu-release.zip"
+          test -s "$asset"
+          gh release upload "$RELEASE_TAG" "$asset" --repo "$GITHUB_REPOSITORY" --clobber
 
   trigger-matched-v8:
     if: ${{ !inputs.skip_release && inputs.platforms == 'all' && !inputs.test_mode }}

@@ -351,6 +351,16 @@ jobs:
           NAME="${NAME}-${{ matrix.variant }}-${CONFIG_LOWER}"
           echo "name=${NAME}" >> "$GITHUB_OUTPUT"
 
+      - name: Write Windows MSVC toolchain receipt
+        if: steps.check.outputs.should_build == 'true' && runner.os == 'Windows' && matrix.variant == 'gpu'
+        shell: pwsh
+        run: |
+          $arch = "${{ matrix.arch }}"
+          $config = "${{ matrix.config || 'Release' }}"
+          $out = "build/${{ matrix.platform }}-${{ matrix.variant }}/msvc-toolchain.json"
+          py -3 tools/write_windows_toolchain_provenance.py $out --arch $arch --configuration $config --variant "${{ matrix.variant }}"
+          Get-Content $out
+
       - name: Create dummy files for test mode
         if: steps.check.outputs.should_build == 'true' && inputs.test_mode
         shell: bash

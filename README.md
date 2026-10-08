@@ -82,6 +82,15 @@ backfill an existing milestone release without rebuilding every platform, run
 the workflow with `platforms=win-arm64`, `release_tag=chrome/m153`, and
 `skip_release=false`.
 
+Each Windows GPU archive includes `msvc-toolchain.json`. It records the exact
+MSVC toolset, Windows SDK, compiler drivers, architecture, and `/MT` or `/MTd`
+runtime selection used to produce the static libraries. Consumers must use the
+MSVC STL/CRT from the recorded toolset or a newer toolset that has passed a
+consumer link probe. Older toolsets, libc++, MinGW, `/NODEFAULTLIB`, and mixed
+CRT settings are unsupported until a matching link receipt exists. The static
+archives intentionally leave `__std_*` MSVC STL helpers for the consumer's
+runtime library to resolve.
+
 ## Minimum OS versions (deployment targets)
 
 A consumer that links these prebuilts inherits `max(Chromium's floor, its own

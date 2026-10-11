@@ -520,6 +520,37 @@ class SkiaBuildScript:
         colored_print("Syncing Deps...", Colors.OKBLUE)
         subprocess.run([sys.executable, "tools/git-sync-deps"], check=True)
 
+    def stabilize_windows_arm64_dep_sync(self):
+        """Make Skia's dependency checkout deterministic on Windows ARM64.
+
+        depot_tools runs git-sync-deps with one thread per dependency.  On the
+        hosted Windows ARM runner that can leave shallow googlesource clones
+        empty after a transient transport failure, and the helper then aborts
+        with an unrelated ``update_ref`` error.  A sequential checkout is
+        slower but retryable and bounded; it is limited to this ARM lane and
+        does not change the source tree or other platforms.
+        """
+        import platform
+
+        if sys.platform != "win32" or platform.machine().lower() not in ("arm64", "aarch64"):
+            return
+
+        sync_script = SKIA_SRC_DIR / "tools" / "git-sync-deps"
+        if not sync_script.exists():
+            return
+        source = sync_script.read_text()
+        threaded = "  multithread(git_checkout_to_directory, list_of_arg_lists)"
+        sequential = (
+            "  for args in list_of_arg_lists:\n"
+            "    git_checkout_to_directory(*args)"
+        )
+        if threaded in source:
+            sync_script.write_text(source.replace(threaded, sequential, 1))
+            colored_print(
+                "Patched git-sync-deps to serialize Windows ARM64 dependency checkouts.",
+                Colors.OKGREEN,
+            )
+
     def generate_gn_args(self, arch: str):
         output_dir = TMP_DIR / f"{self.platform}_{self.config}_{arch}_{self.variant}"
         gn_args = BASIC_GN_ARGS
@@ -1326,6 +1357,7 @@ class SkiaBuildScript:
         self.setup_depot_tools()
         self.setup_skia_repo()
         self.setup_gn_for_windows_arm64()
+        self.stabilize_windows_arm64_dep_sync()
 
         # if self.config == "Release":
         #     self.modify_deps()

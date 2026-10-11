@@ -637,6 +637,13 @@ class SkiaBuildScript:
 '''
         elif self.platform == "win":
             gn_args += f"extra_cflags = [\"{'/MTd' if self.config == 'Debug' else '/MT'}\"]\n"
+            # Pulp consumes the Windows archives with MSVC.  Keep the
+            # producer on the same STL/CRT ABI; the clang-produced ARM64
+            # asset otherwise leaves __std_* symbols unresolved at link time
+            # for MSVC consumers.
+            gn_args += "is_clang = false\n"
+            gn_args += "cc = \"cl.exe\"\n"
+            gn_args += "cxx = \"cl.exe\"\n"
             # Map architecture names to GN target_cpu values
             if arch == "Win32":
                 gn_args += "target_cpu = \"x86\"\n"

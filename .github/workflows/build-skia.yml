@@ -24,6 +24,11 @@ on:
         required: false
         type: boolean
         default: false
+      release_tag:
+        description: 'Existing release tag to receive a selected backfill asset (for example chrome/m153)'
+        required: false
+        type: string
+        default: ''
       apple_runner:
         description: 'GitHub-hosted macOS runner label for Apple builds'
         required: false
@@ -69,93 +74,46 @@ jobs:
           name: skia-release-lock
           path: skia-release-lock.json
 
-  build-skia:
+  select-matrix:
     needs: resolve-skia
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Select requested build cells
+        id: select
+        env:
+          PLATFORMS: ${{ inputs.platforms || 'all' }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+
+          cells = json.load(open("tools/skia_matrix.json", encoding="utf-8"))
+          requested = os.environ["PLATFORMS"].strip()
+          if requested in ("", "all"):
+              selected = cells
+          else:
+              selectors = {part.strip() for part in requested.split(",") if part.strip()}
+              selected = [
+                  cell for cell in cells
+                  if cell.get("selector", cell["platform"]) in selectors
+                  or (cell["platform"] in selectors and cell.get("selector") is None)
+              ]
+          if not selected:
+              raise SystemExit(f"No build cells selected for platforms={requested!r}")
+          payload = json.dumps({"include": selected}, separators=(",", ":"))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"matrix={payload}\n")
+          print(f"Selected {len(selected)} build cell(s) for {requested}: " + ", ".join(
+              cell.get("selector", cell["platform"]) for cell in selected))
+          PY
+
+  build-skia:
+    needs: [resolve-skia, select-matrix]
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: macos-15
-            platform: mac
-            variant: gpu
-            arch: "universal"
-          - os: macos-15
-            platform: mac
-            variant: gpu
-            arch: "arm64"
-          - os: macos-15
-            platform: mac
-            variant: gpu
-            arch: "x86_64"
-          - os: macos-15
-            platform: ios
-            variant: gpu
-            arch: "arm64"
-            target: "device"
-          - os: macos-15
-            platform: ios
-            variant: gpu
-            arch: "arm64,x86_64"
-            target: "simulator"
-          - os: macos-15
-            platform: visionos
-            variant: gpu
-            arch: "arm64"
-            target: "device"
-          - os: macos-15
-            platform: visionos
-            variant: gpu
-            arch: "arm64"
-            target: "simulator"
-          - os: windows-2022
-            platform: win
-            variant: gpu
-            arch: x64
-            config: Release
-          - os: windows-2022
-            platform: win
-            variant: gpu
-            arch: x64
-            config: Debug
-          # linux/x64 is built by the dedicated `portable-linux-x64` job below
-          # (Ubuntu 22.04 container → glibc 2.34 floor). Building it here on
-          # ubuntu-latest leaked glibc ~2.39 into libskia.a/libdawn_combined.a.
-          - os: ubuntu-latest
-            platform: wasm
-            variant: gpu
-            arch: "wasm32"
-            config: Release
-
-          # ARM64 platforms
-          - os: ubuntu-24.04-arm
-            platform: linux
-            variant: gpu
-            arch: arm64
-          # - os: windows-11-arm
-          #   platform: win
-          #   variant: gpu
-          #   arch: arm64
-          # CPU variants
-          # - os: macos-15
-          #   platform: mac
-          #   variant: cpu
-          #   arch: ""
-          # - os: windows-2022
-          #   platform: win
-          #   variant: cpu
-          #   arch: x64
-          # - os: ubuntu-24.04
-          #   platform: linux
-          #   variant: cpu
-          #   arch: x64
-          # - os: ubuntu-latest
-          #   platform: wasm
-          #   variant: cpu
-          #   arch: ""
-          # - os: macos-15
-          #   platform: ios
-          #   variant: cpu
-          #   arch: ""
+      matrix: ${{ fromJSON(needs.select-matrix.outputs.matrix) }}
     runs-on: ${{ startsWith(matrix.os, 'macos') && (inputs.apple_runner || 'macos-15') || matrix.os }}
     env:
       SKIA_BRANCH: ${{ needs.resolve-skia.outputs.tag }}
@@ -166,12 +124,16 @@ jobs:
         shell: bash
         run: |
           PLATFORMS="${{ inputs.platforms || 'all' }}"
-          if [[ "$PLATFORMS" == "all" ]] || [[ "$PLATFORMS" == *"${{ matrix.platform }}"* ]]; then
+          SELECTOR="${{ matrix.selector || matrix.platform }}"
+          case ",$PLATFORMS," in
+            *,all,*|*,"$SELECTOR",*)
             echo "should_build=true" >> "$GITHUB_OUTPUT"
-          else
+            ;;
+            *)
             echo "should_build=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping ${{ matrix.platform }} (not in platforms: $PLATFORMS)"
-          fi
+            echo "Skipping $SELECTOR (not in platforms: $PLATFORMS)"
+            ;;
+          esac
 
       - name: Checkout repository
         if: steps.check.outputs.should_build == 'true'
@@ -710,6 +672,7 @@ jobs:
             ./skia-build-visionos-simulator-arm64-gpu-release/skia-build-visionos-simulator-arm64-gpu-release.zip
             ./skia-build-win-x64-gpu-release/skia-build-win-x64-gpu-release.zip
             ./skia-build-win-x64-gpu-debug/skia-build-win-x64-gpu-debug.zip
+            ./skia-build-win-arm64-gpu-release/skia-build-win-arm64-gpu-release.zip
             ./skia-build-linux-x64-gpu-release/skia-build-linux-x64-gpu-release.zip
             ./skia-build-linux-arm64-gpu-release/skia-build-linux-arm64-gpu-release.zip
             ./skia-build-wasm-wasm32-gpu-release/skia-build-wasm-wasm32-gpu-release.zip
@@ -717,6 +680,30 @@ jobs:
             ./skia-release-lock/skia-release-lock.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Backfill a single ARM64 Windows asset into an existing milestone release
+  # without rebuilding the other platform archives. This keeps the normal
+  # all-platform release path unchanged while allowing m153 and later tags to
+  # gain the ARM64 artifact independently.
+  publish-windows-arm64-backfill:
+    if: ${{ !inputs.skip_release && inputs.platforms == 'win-arm64' && inputs.release_tag != '' }}
+    needs: [build-skia]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download ARM64 Windows artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: skia-build-win-arm64-gpu-release
+          path: artifact
+      - name: Upload ARM64 Windows asset to existing release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          asset="artifact/skia-build-win-arm64-gpu-release.zip"
+          test -s "$asset"
+          gh release upload "$RELEASE_TAG" "$asset" --repo "$GITHUB_REPOSITORY" --clobber
 
   trigger-matched-v8:
     if: ${{ !inputs.skip_release && inputs.platforms == 'all' && !inputs.test_mode }}

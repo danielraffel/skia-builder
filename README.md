@@ -59,13 +59,28 @@ A consumer targeting `CMAKE_OSX_ARCHITECTURES=x86_64` should pull `mac-x86_64`
 build pulls `mac-universal`. All three ship every static lib (`libskia.a`,
 `libdawn_combined.a`, HarfBuzz/ICU/skparagraph/skottie/…) fat or thin to match.
 
-Note: you may need to call 
+Note: you may need to call `ulimit -n 2048` in order to increase the number of
+files that can be opened at once.
 
 ```bash
 ulimit -n 2048
 ```
 
-in order to increase the number of files that can be opened at once.
+### Published Windows GPU release assets
+
+Windows publishes separate GPU archives for each supported architecture:
+
+| Asset | Arch | Use |
+|-------|------|-----|
+| `skia-build-win-arm64-gpu-release.zip` | `arm64` | Windows 11 ARM64, including Apple Silicon Windows VMs |
+| `skia-build-win-x64-gpu-release.zip` | `x64` | Windows x64 and x64 emulation on Windows ARM64 |
+| `skia-build-win-x64-gpu-debug.zip` | `x64` | Windows x64 debug investigations |
+
+The ARM64 archive uses Dawn/Direct3D; OpenGL is disabled for that target. The
+release workflow builds the ARM64 archive alongside the x64 archives. To
+backfill an existing milestone release without rebuilding every platform, run
+the workflow with `platforms=win-arm64`, `release_tag=chrome/m153`, and
+`skip_release=false`.
 
 ## Minimum OS versions (deployment targets)
 
@@ -120,6 +135,13 @@ LLVM should be installed in `C:\Program Files\LLVM\`
 
 ```bash
 py -3 build-skia.py -config Release -branch chrome/m152 win
+```
+
+On Windows 11 ARM64, pass `-archs arm64`. The ARM64 GPU build uses Dawn and
+Direct3D (OpenGL is disabled for this target):
+
+```bash
+py -3 build-skia.py -config Release -branch chrome/m153 -archs arm64 win
 ```
 
 ## CI / GitHub Actions

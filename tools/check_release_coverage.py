@@ -19,11 +19,13 @@ CI:           .github/workflows/lint.yml on any PR touching build-skia.yml
 from __future__ import annotations
 
 import sys
+import json
 from pathlib import Path
 
 import yaml
 
 WORKFLOW = Path(__file__).resolve().parent.parent / ".github" / "workflows" / "build-skia.yml"
+MATRIX = Path(__file__).resolve().parent / "skia_matrix.json"
 
 
 def archive_name(entry: dict) -> str:
@@ -58,7 +60,7 @@ def find_release_files_block(wf: dict) -> str:
 
 def main() -> int:
     wf = yaml.safe_load(WORKFLOW.read_text())
-    matrix = wf["jobs"]["build-skia"]["strategy"]["matrix"]["include"]
+    matrix = json.loads(MATRIX.read_text())
     files = find_release_files_block(wf)
 
     missing = []

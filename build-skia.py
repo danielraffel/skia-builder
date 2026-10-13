@@ -667,6 +667,13 @@ class SkiaBuildScript:
     ]
 '''
         elif self.platform == "win":
+            # Dawn is configured by Skia's GN-generated CMake sub-build.  Keep
+            # its compiler on the same MSVC STL/CRT ABI as Skia and the Pulp
+            # consumer; the workflow may have installed clang-cl for other
+            # Windows lanes, so override the inherited compiler environment
+            # explicitly for this platform.
+            os.environ["CC"] = "cl.exe"
+            os.environ["CXX"] = "cl.exe"
             gn_args += f"extra_cflags = [\"{'/MTd' if self.config == 'Debug' else '/MT'}\"]\n"
             # Pulp consumes the Windows archives with MSVC.  Keep the
             # producer on the same STL/CRT ABI; the clang-produced ARM64

@@ -25,7 +25,17 @@ on:
         type: boolean
         default: false
       release_tag:
-        description: 'Existing release tag to receive a selected backfill asset (for example chrome/m153)'
+        description: 'Existing release tag to receive a selected backfill asset (for example chrome/m153); must equal skia_branch'
+        required: false
+        type: string
+        default: ''
+      replace_asset:
+        description: 'Deliberate rebuild only: the asset file on an existing release whose published bytes may be replaced (for example skia-build-win-arm64-gpu-release.zip). Empty refuses any change to published bytes.'
+        required: false
+        type: string
+        default: ''
+      replace_reason:
+        description: 'Required with replace_asset: why the published bytes are wrong. Recorded with the old and new sha256 in the release notes.'
         required: false
         type: string
         default: ''
@@ -46,6 +56,15 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   LLVM_VERSION: "20.1.0"
+  # Printed by tools/release_asset_guard.py when a published asset's bytes
+  # change, so the consumer repin lands in the same change.
+  REPIN_HINT: >-
+    Pulp: in tools/deps/manifest.json, set the Skia determinism.release_assets entry
+    whose url ends in /releases/download/{tag}/{asset} from the published sha256 {old}
+    to {new}. Before repinning, confirm the digest with
+    gh api repos/danielraffel/skia-builder/releases/tags/{tag} --jq '.assets[] | select(.name == "{asset}") | .digest',
+    read the replacement entry in that release's notes, and for a Windows archive run
+    python3 tools/check_windows_archive.py {asset} from skia-builder on the downloaded file.
 
 permissions:
   contents: write
@@ -60,12 +79,35 @@ jobs:
       dawn: ${{ steps.lock.outputs.dawn }}
     steps:
       - uses: actions/checkout@v6
+      # A backfill adds an asset to a release that already exists, so it must
+      # build the exact Skia/Dawn revision that release was cut from, not the
+      # branch head, which keeps moving after the release.
       - name: Resolve immutable Skia/Dawn release lock
         id: lock
         env:
           SKIA_BRANCH: ${{ inputs.skia_branch || 'chrome/m152' }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          REPLACE_ASSET: ${{ inputs.replace_asset }}
+          REPLACE_REASON: ${{ inputs.replace_reason }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python3 tools/skia_release_lock.py "$SKIA_BRANCH" \
+          set -euo pipefail
+          if [ -n "$REPLACE_ASSET" ] && [ -z "$(printf '%s' "$REPLACE_REASON" | tr -d '[:space:]')" ]; then
+            echo "::error::replace_asset=$REPLACE_ASSET requires replace_reason"
+            exit 1
+          fi
+          lock_args=()
+          if [ -n "$RELEASE_TAG" ]; then
+            if [ "$RELEASE_TAG" != "$SKIA_BRANCH" ]; then
+              echo "::error::release_tag=$RELEASE_TAG must equal skia_branch=$SKIA_BRANCH: a backfill builds that release's own milestone"
+              exit 1
+            fi
+            mkdir -p published-lock
+            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern skia-release-lock.json --dir published-lock
+            lock_args=(--from-release-lock published-lock/skia-release-lock.json)
+          fi
+          python3 tools/skia_release_lock.py "$SKIA_BRANCH" ${lock_args[@]+"${lock_args[@]}"} \
             --output skia-release-lock.json \
             --github-output "$GITHUB_OUTPUT"
       - name: Upload immutable release lock
@@ -310,6 +352,15 @@ jobs:
             ccache-${{ runner.os }}-${{ steps.cache-key.outputs.arch }}-${{ matrix.platform }}-${{ matrix.variant }}-${{ env.SKIA_BRANCH }}-
             ccache-${{ runner.os }}-${{ steps.cache-key.outputs.arch }}-${{ matrix.platform }}-${{ matrix.variant }}-
 
+      # Resolve the MSVC toolchain before the long build so a receipt that
+      # cannot be proven fails in minutes, not after the build.
+      - name: Resolve Windows MSVC toolchain
+        if: steps.check.outputs.should_build == 'true' && runner.os == 'Windows' && matrix.variant == 'gpu'
+        shell: pwsh
+        run: |
+          py -3 tools/write_windows_toolchain_provenance.py "$env:RUNNER_TEMP/msvc-toolchain.json" --arch "${{ matrix.arch }}" --configuration "${{ matrix.config || 'Release' }}" --variant "${{ matrix.variant }}"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       # - name: Build Skia (Debug)
       #   if: ${{ !inputs.test_mode }}
       #   run: |
@@ -358,8 +409,13 @@ jobs:
           $arch = "${{ matrix.arch }}"
           $config = "${{ matrix.config || 'Release' }}"
           $out = "build/${{ matrix.platform }}-${{ matrix.variant }}/msvc-toolchain.json"
-          py -3 tools/write_windows_toolchain_provenance.py $out --arch $arch --configuration $config --variant "${{ matrix.variant }}"
-          Get-Content $out
+          $receiptArgs = @($out, "--arch", $arch, "--configuration", $config, "--variant", "${{ matrix.variant }}")
+          if ("${{ inputs.test_mode }}" -ne "true") {
+            # The cl.exe GN actually built with is authoritative.
+            $receiptArgs += @("--toolchain-ninja", "build/tmp/skia/${{ matrix.platform }}_${config}_${arch}_${{ matrix.variant }}/toolchain.ninja")
+          }
+          py -3 tools/write_windows_toolchain_provenance.py @receiptArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Create dummy files for test mode
         if: steps.check.outputs.should_build == 'true' && inputs.test_mode
@@ -386,6 +442,11 @@ jobs:
           else
             zip -r "$ARCHIVE" "${PACKAGE_PATHS[@]}"
           fi
+
+      - name: Smoke-check Windows archive
+        if: steps.check.outputs.should_build == 'true' && runner.os == 'Windows' && matrix.variant == 'gpu' && !inputs.test_mode
+        shell: bash
+        run: python tools/check_windows_archive.py "${{ steps.archive.outputs.name }}.zip"
 
       - name: Upload artifact
         if: steps.check.outputs.should_build == 'true'
@@ -646,12 +707,46 @@ jobs:
     if: ${{ !inputs.skip_release && inputs.platforms == 'all' }}
     needs: [resolve-skia, build-skia, create-xcframework, portable-linux-x64]
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ needs.resolve-skia.outputs.tag }}${{ inputs.test_mode && '-test' || '' }}
     steps:
+      - name: Checkout repository (release tools)
+        uses: actions/checkout@v6
+        with:
+          path: src
+
       - name: Download artifacts
         uses: actions/download-artifact@v7
 
+      - name: Smoke-check Windows archives
+        if: ${{ !inputs.test_mode }}
+        run: python3 src/tools/check_windows_archive.py ./skia-build-win-*/*.zip
+
+      # Re-running a release for an existing tag must not change published
+      # bytes that consumers pinned.  Identical assets are skipped, new assets
+      # are left for action-gh-release, and a changed asset is refused unless
+      # it is named in replace_asset (which the guard replaces and records
+      # here, before the notes are written).
+      - name: Guard published assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPLACE_ASSET: ${{ inputs.replace_asset }}
+          REPLACE_REASON: ${{ inputs.replace_reason }}
+        run: |
+          set -euo pipefail
+          replace=()
+          if [ -n "$REPLACE_ASSET" ]; then
+            replace=(--allow-replace "$REPLACE_ASSET" --reason "$REPLACE_REASON")
+          fi
+          python3 src/tools/release_asset_guard.py --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" \
+            publish ./skia-build-*/*.zip ./Skia.xcframework/Skia.xcframework.zip \
+            ./skia-release-lock/skia-release-lock.json \
+            --missing-release-ok --defer-new ${replace[@]+"${replace[@]}"} \
+            --repin-hint "$REPIN_HINT"
+
       - name: Write release notes
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SKIA_RELEASE: ${{ needs.resolve-skia.outputs.tag }}
         run: |
           set -euo pipefail
@@ -663,6 +758,9 @@ jobs:
 
           https://raw.githubusercontent.com/google/skia/${SKIA_RELEASE}/RELEASE_NOTES.md
           EOF
+          # Keep the record of any deliberate asset replacement.
+          python3 src/tools/release_asset_guard.py --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" \
+            carry-ledger release-notes.md
 
       - name: Create Release
         uses: softprops/action-gh-release@v3
@@ -672,6 +770,9 @@ jobs:
           name: ${{ needs.resolve-skia.outputs.tag }}${{ inputs.test_mode && ' (Test)' || '' }}
           draft: false
           prerelease: ${{ inputs.test_mode }}
+          # Never delete-and-reupload a published asset; the guard step above
+          # has already handled every asset that exists on the release.
+          overwrite_files: false
           files: |
             ./skia-build-mac-universal-gpu-release/skia-build-mac-universal-gpu-release.zip
             ./skia-build-mac-arm64-gpu-release/skia-build-mac-arm64-gpu-release.zip
@@ -700,20 +801,36 @@ jobs:
     needs: [build-skia]
     runs-on: ubuntu-24.04
     steps:
+      - name: Checkout repository (release tools)
+        uses: actions/checkout@v6
+        with:
+          path: src
       - name: Download ARM64 Windows artifact
         uses: actions/download-artifact@v7
         with:
           name: skia-build-win-arm64-gpu-release
           path: artifact
-      - name: Upload ARM64 Windows asset to existing release
+      - name: Smoke-check ARM64 Windows archive
+        run: python3 src/tools/check_windows_archive.py artifact/skia-build-win-arm64-gpu-release.zip
+      # A first backfill uploads a new asset.  Re-running it is safe: identical
+      # bytes are skipped, and a rebuild with different bytes is refused unless
+      # replace_asset names the asset and replace_reason says why, in which
+      # case both digests are printed and recorded in the release notes.
+      - name: Publish ARM64 Windows asset to existing release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.release_tag }}
+          REPLACE_ASSET: ${{ inputs.replace_asset }}
+          REPLACE_REASON: ${{ inputs.replace_reason }}
         run: |
           set -euo pipefail
-          asset="artifact/skia-build-win-arm64-gpu-release.zip"
-          test -s "$asset"
-          gh release upload "$RELEASE_TAG" "$asset" --repo "$GITHUB_REPOSITORY" --clobber
+          replace=()
+          if [ -n "$REPLACE_ASSET" ]; then
+            replace=(--allow-replace "$REPLACE_ASSET" --reason "$REPLACE_REASON")
+          fi
+          python3 src/tools/release_asset_guard.py --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" \
+            publish artifact/skia-build-win-arm64-gpu-release.zip ${replace[@]+"${replace[@]}"} \
+            --repin-hint "$REPIN_HINT"
 
   trigger-matched-v8:
     if: ${{ !inputs.skip_release && inputs.platforms == 'all' && !inputs.test_mode }}

@@ -63,13 +63,36 @@ def resolve_lock(tag):
     }
 
 
+def load_published_lock(path, tag):
+    """Reuse the lock an existing release was built from.
+
+    A backfill adds one asset to a release that already exists.  Building it
+    from the branch head would mix Skia revisions inside one release whenever
+    the branch has moved since the release was cut, so a backfill builds the
+    exact revision recorded in that release's skia-release-lock.json.
+    """
+    lock = json.loads(Path(path).read_text(encoding="utf-8"))
+    if lock.get("skia_release_tag") != tag:
+        raise SystemExit(
+            f"skia_release_lock: {path} is for {lock.get('skia_release_tag')!r}, not {tag!r}")
+    for key in ("built_skia", "built_dawn"):
+        if not re.fullmatch(r"[0-9a-f]{40}", str(lock.get(key, ""))):
+            raise SystemExit(f"skia_release_lock: {path} has no immutable {key}")
+    return lock
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("tag")
     parser.add_argument("--output", type=Path, default=Path("skia-release-lock.json"))
     parser.add_argument("--github-output", type=Path)
+    parser.add_argument("--from-release-lock", type=Path,
+                        help="use the lock published with an existing release instead of the branch head")
     args = parser.parse_args(argv)
-    lock = resolve_lock(args.tag)
+    if args.from_release_lock:
+        lock = load_published_lock(args.from_release_lock, args.tag)
+    else:
+        lock = resolve_lock(args.tag)
     args.output.write_text(json.dumps(lock, indent=2) + "\n", encoding="utf-8")
     if args.github_output:
         with args.github_output.open("a", encoding="utf-8") as out:

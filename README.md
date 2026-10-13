@@ -79,8 +79,30 @@ Windows publishes separate GPU archives for each supported architecture:
 The ARM64 archive uses Dawn/Direct3D; OpenGL is disabled for that target. The
 release workflow builds the ARM64 archive alongside the x64 archives. To
 backfill an existing milestone release without rebuilding every platform, run
-the workflow with `platforms=win-arm64`, `release_tag=chrome/m153`, and
-`skip_release=false`.
+the workflow with `platforms=win-arm64`, `release_tag=chrome/m153`,
+`skia_branch=chrome/m153`, and `skip_release=false`. A backfill builds the exact
+Skia/Dawn revision recorded in that release's `skia-release-lock.json`, not the
+branch head, so the new asset matches the rest of the release.
+
+### Published assets are immutable
+
+Consumers pin every release asset by sha256 (Pulp's `tools/deps/manifest.json`
+does), so no workflow replaces published bytes in place.
+`tools/release_asset_guard.py` is the only path that puts a file on a release:
+
+- an asset that does not exist yet is uploaded;
+- an asset whose bytes are identical is skipped, so re-running a release or a
+  backfill is safe;
+- an asset whose bytes differ is refused, and nothing is uploaded. The refusal
+  prints the published and new sha256 and the consumer repin steps.
+
+A deliberate rebuild (for example the Windows ARM64 rebuild with the MSVC ABI)
+re-dispatches with `replace_asset=<asset file name>` and
+`replace_reason='<why the published bytes are wrong>'`. The guard replaces only
+that asset, proves the new digest landed, and appends the old and new sha256,
+the reason, the run, and the commit to an "Asset replacements" section in the
+release notes. Repin consumers in the same change. `create-xcframework.yml`
+takes `replace_reason` for `Skia.xcframework.zip` the same way.
 
 Each Windows GPU archive includes `msvc-toolchain.json`. It records the exact
 MSVC toolset, Windows SDK, compiler drivers, architecture, and `/MT` or `/MTd`
@@ -90,6 +112,14 @@ consumer link probe. Older toolsets, libc++, MinGW, `/NODEFAULTLIB`, and mixed
 CRT settings are unsupported until a matching link receipt exists. The static
 archives intentionally leave `__std_*` MSVC STL helpers for the consumer's
 runtime library to resolve.
+
+The receipt is resolved the way Skia's GN build finds MSVC (`gn/find_msvc.py`,
+including its `vswhere` fallback for Visual Studio 18) and then cross-checked
+against the `cl.exe` GN wrote into `toolchain.ninja`. A receipt that records
+`unknown` or a compiler error instead of a version fails the build, and
+`tools/check_windows_archive.py` re-checks every Windows archive before it is
+published: the receipt must be valid for the archive's architecture and
+configuration, and every `.lib` must contain objects for that architecture only.
 
 ## Minimum OS versions (deployment targets)
 

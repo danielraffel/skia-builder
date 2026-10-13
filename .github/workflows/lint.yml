@@ -25,6 +25,7 @@ on:
       - 'tools/test_windows_toolchain_provenance.py'
       - 'tools/testdata/**'
       - 'tools/requirements-lint.txt'
+      - 'tools/test_lint_requirements.py'
   push:
     branches: [main]
     paths:
@@ -47,6 +48,7 @@ on:
       - 'tools/test_windows_toolchain_provenance.py'
       - 'tools/testdata/**'
       - 'tools/requirements-lint.txt'
+      - 'tools/test_lint_requirements.py'
   workflow_dispatch:
 
 jobs:
@@ -57,7 +59,21 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
-      - run: pip install --require-hashes --no-deps -r tools/requirements-lint.txt
+      # Wheels only: an sdist build would fetch setuptools/cython unpinned.
+      - run: "pip install --only-binary :all: --require-hashes --no-deps -r tools/requirements-lint.txt"
+      # Prove the sdist fallback is refused: offered only PyYAML's sdist, the
+      # same flags must fail rather than build it.
+      - name: Check the sdist fallback is refused
+        run: |
+          set -u
+          printf '%s\n' 'pyyaml==6.0.3 --hash=sha256:d76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f' > "$RUNNER_TEMP/sdist-only.txt"
+          if pip install --dry-run --only-binary :all: --require-hashes --no-deps \
+               --target "$RUNNER_TEMP/sdist-probe" -r "$RUNNER_TEMP/sdist-only.txt"; then
+            echo "::error::pip accepted PyYAML's sdist under --only-binary :all:"
+            exit 1
+          fi
+          echo "sdist fallback refused, as required"
+      - run: python3 tools/test_lint_requirements.py
       # Every active build-matrix lane must be uploaded by create-release.
       # Catches the chrome/m150 regression: a lane built but never released.
       - run: python3 tools/check_release_coverage.py

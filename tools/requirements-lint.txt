@@ -1,5 +1,7 @@
 # Hash-locked dependencies for the lint workflow's checks (tools/check_release_coverage.py).
-# Regenerate from https://pypi.org/pypi/PyYAML/<version>/json, listing every file's sha256.
+# Regenerate from https://pypi.org/pypi/PyYAML/<version>/json, listing every WHEEL's sha256.
+# Wheels only: the sdist is deliberately absent and the workflow installs with
+# --only-binary :all:, because building the sdist fetches setuptools and cython unpinned.
 pyyaml==6.0.3 \
     --hash=sha256:214ed4befebe12df36bcc8bc2b64b396ca31be9304b8f59e25c11cf94a4c033b \
     --hash=sha256:02ea2dfa234451bbb8772601d7b8e426c2bfa197136796224e50e35a78777956 \
@@ -72,5 +74,4 @@ pyyaml==6.0.3 \
     --hash=sha256:fa160448684b4e94d80416c0fa4aac48967a969efe22931448d853ada8baf926 \
     --hash=sha256:27c0abcb4a5dac13684a37f76e701e054692a9b2d3064b70f5e4eb54810553d7 \
     --hash=sha256:1ebe39cb5fc479422b83de611d14e2c0d3bb2a18bbcb01f229ab3cfbd8fee7a0 \
-    --hash=sha256:2e71d11abed7344e42a8849600193d15b6def118602c4c176f748e4583246007 \
-    --hash=sha256:d76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f
+    --hash=sha256:2e71d11abed7344e42a8849600193d15b6def118602c4c176f748e4583246007

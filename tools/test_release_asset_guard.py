@@ -282,16 +282,22 @@ class WorkflowsUseTheGuard(unittest.TestCase):
         self.assertEqual(offenders, [], "use tools/release_asset_guard.py instead")
 
     def test_action_gh_release_never_overwrites(self):
-        import yaml
+        # A text scan rather than a YAML parse keeps this test dependency-free:
+        # each action-gh-release step must set overwrite_files: false before
+        # the next step starts.
         workflows = HERE.parent / ".github" / "workflows"
         for path in sorted(workflows.glob("*.yml")):
-            data = yaml.safe_load(path.read_text())
-            for job in (data.get("jobs") or {}).values():
-                for step in job.get("steps", []):
-                    if str(step.get("uses", "")).startswith("softprops/action-gh-release"):
-                        with self.subTest(workflow=path.name):
-                            self.assertIs(step.get("with", {}).get("overwrite_files"), False)
-
+            lines = path.read_text().splitlines()
+            for number, line in enumerate(lines):
+                if "uses: softprops/action-gh-release" not in line.split("#", 1)[0]:
+                    continue
+                step = []
+                for following in lines[number + 1:]:
+                    if following.lstrip().startswith("- "):
+                        break
+                    step.append(following.split("#", 1)[0].strip())
+                with self.subTest(workflow=path.name, line=number + 1):
+                    self.assertIn("overwrite_files: false", step)
 
 if __name__ == "__main__":
     unittest.main()

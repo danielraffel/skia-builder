@@ -16,6 +16,14 @@ on:
       - 'tools/test_skia_release_lock.py'
       - 'tools/matched_v8_link.py'
       - 'tools/test_matched_v8_link.py'
+      - '.github/workflows/create-xcframework.yml'
+      - 'tools/release_asset_guard.py'
+      - 'tools/test_release_asset_guard.py'
+      - 'tools/check_windows_archive.py'
+      - 'tools/test_check_windows_archive.py'
+      - 'tools/write_windows_toolchain_provenance.py'
+      - 'tools/test_windows_toolchain_provenance.py'
+      - 'tools/testdata/**'
   push:
     branches: [main]
     paths:
@@ -29,6 +37,14 @@ on:
       - 'tools/test_skia_release_lock.py'
       - 'tools/matched_v8_link.py'
       - 'tools/test_matched_v8_link.py'
+      - '.github/workflows/create-xcframework.yml'
+      - 'tools/release_asset_guard.py'
+      - 'tools/test_release_asset_guard.py'
+      - 'tools/check_windows_archive.py'
+      - 'tools/test_check_windows_archive.py'
+      - 'tools/write_windows_toolchain_provenance.py'
+      - 'tools/test_windows_toolchain_provenance.py'
+      - 'tools/testdata/**'
   workflow_dispatch:
 
 jobs:
@@ -46,4 +62,9 @@ jobs:
       - run: python3 patches/test_apply_dawn_ios_visionos.py
       - run: python3 tools/test_skia_release_lock.py
       - run: python3 tools/test_matched_v8_link.py
-      - run: python3 -m py_compile build-skia.py tools/skia_release_lock.py tools/matched_v8_link.py
+      # Published assets are immutable unless deliberately replaced, and
+      # Windows archives ship a provable toolchain receipt.
+      - run: python3 tools/test_release_asset_guard.py
+      - run: python3 tools/test_windows_toolchain_provenance.py
+      - run: python3 tools/test_check_windows_archive.py
+      - run: python3 -m py_compile build-skia.py tools/skia_release_lock.py tools/matched_v8_link.py tools/release_asset_guard.py tools/check_windows_archive.py tools/write_windows_toolchain_provenance.py

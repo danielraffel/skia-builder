@@ -12,6 +12,11 @@ on:
         required: false
         type: boolean
         default: true
+      replace_reason:
+        description: 'Deliberately replace a published Skia.xcframework.zip whose bytes differ; say why (recorded in the release notes). Leave empty to refuse any change.'
+        required: false
+        type: string
+        default: ''
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -22,6 +27,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout repository (release asset guard)
+        uses: actions/checkout@v6
+        with:
+          path: src
+
       - name: Download release artifacts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -103,15 +113,24 @@ jobs:
       - name: Package XCFramework
         run: zip -ry Skia.xcframework.zip Skia.xcframework  # -y preserves symlinks
 
+      # Published assets are pinned by digest downstream, so a changed
+      # XCFramework is refused unless replace_reason says why; an identical
+      # re-run is a no-op.  See tools/release_asset_guard.py.
       - name: Upload XCFramework to release
         if: ${{ inputs.upload_to_release }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          REPLACE_REASON: ${{ inputs.replace_reason }}
         run: |
-          gh release upload "${{ inputs.release_tag }}" \
-            Skia.xcframework.zip \
-            --repo ${{ github.repository }} \
-            --clobber
+          set -euo pipefail
+          replace=()
+          if [ -n "$REPLACE_REASON" ]; then
+            replace=(--allow-replace Skia.xcframework.zip --reason "$REPLACE_REASON")
+          fi
+          python3 src/tools/release_asset_guard.py --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" \
+            publish Skia.xcframework.zip ${replace[@]+"${replace[@]}"} \
+            --repin-hint "consumers pinning {tag}/{asset}: sha256 {old} -> {new}"
 
       - name: Upload XCFramework artifact
         uses: actions/upload-artifact@v7

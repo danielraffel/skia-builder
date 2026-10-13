@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "target": {
+    "platform": "windows",
+    "architecture": "arm64",
+    "configuration": "Release",
+    "variant": "gpu"
+  },
+  "producer": {
+    "skia_gn_compiler": {
+      "driver": "cl.exe",
+      "path": "cl.exe",
+      "version": "unknown"
+    },
+    "dawn_cmake_compiler": {
+      "driver": "clang-cl.exe",
+      "path": "C:\\Program Files\\LLVM\\bin\\clang-cl.exe",
+      "version": "clang-cl: error: no input files"
+    },
+    "msvc_toolset_version": "unknown",
+    "windows_sdk_version": "unknown",
+    "host_architecture": "ARM64"
+  },
+  "runtime": {
+    "abi": "msvc",
+    "library": "static",
+    "compile_flag": "/MT",
+    "consumer_requirement": "MSVC STL/CRT toolset >= unknown; older toolsets are not proven compatible"
+  },
+  "notes": [
+    "Static archives intentionally retain unresolved MSVC STL __std_* references.",
+    "The consumer linker supplies those references from its matching MSVC runtime library.",
+    "Do not mix this archive with a consumer using libc++, MinGW, /NODEFAULTLIB, or an older unvalidated MSVC toolset."
+  ]
+}

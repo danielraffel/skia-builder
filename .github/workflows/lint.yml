@@ -61,17 +61,28 @@ jobs:
           python-version: '3.13'
       # Wheels only: an sdist build would fetch setuptools/cython unpinned.
       - run: "pip install --only-binary :all: --require-hashes --no-deps -r tools/requirements-lint.txt"
-      # Prove the sdist fallback is refused: offered only PyYAML's sdist, the
-      # same flags must fail rather than build it.
+      # Prove the sdist fallback is refused. Simulate a runner with no PyYAML
+      # wheel (a FreeBSD platform tag) and even allow the sdist's hash: under
+      # the install line's flags pip must find nothing, rather than build the
+      # sdist and fetch its build dependencies unpinned.
       - name: Check the sdist fallback is refused
         run: |
           set -u
-          printf '%s\n' 'pyyaml==6.0.3 --hash=sha256:d76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f' > "$RUNNER_TEMP/sdist-only.txt"
-          if pip install --dry-run --only-binary :all: --require-hashes --no-deps \
-               --target "$RUNNER_TEMP/sdist-probe" -r "$RUNNER_TEMP/sdist-only.txt"; then
-            echo "::error::pip accepted PyYAML's sdist under --only-binary :all:"
+          { sed '$ s/$/ \\/' tools/requirements-lint.txt
+            echo '    --hash=sha256:d76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f'
+          } > "$RUNNER_TEMP/with-sdist.txt"
+          if pip install --dry-run --no-cache-dir --only-binary :all: --require-hashes --no-deps \
+               --platform freebsd_14_0_amd64 --target "$RUNNER_TEMP/sdist-probe" \
+               -r "$RUNNER_TEMP/with-sdist.txt" > "$RUNNER_TEMP/probe.log" 2>&1; then
+            cat "$RUNNER_TEMP/probe.log"
+            echo "::error::pip accepted PyYAML without a wheel under --only-binary :all:"
             exit 1
           fi
+          grep -q "No matching distribution found for pyyaml" "$RUNNER_TEMP/probe.log" || {
+            cat "$RUNNER_TEMP/probe.log"
+            echo "::error::the probe failed for an unexpected reason"
+            exit 1
+          }
           echo "sdist fallback refused, as required"
       - run: python3 tools/test_lint_requirements.py
       # Every active build-matrix lane must be uploaded by create-release.

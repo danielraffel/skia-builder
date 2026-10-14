@@ -59,11 +59,24 @@ def _patch_libwebp(path: Path) -> bool:
     return True
 
 
+def _patch_libwebp_cpu(path: Path) -> bool:
+    content = path.read_text(encoding="utf-8")
+    old = "(defined(_M_X64) || defined(_M_IX86))"
+    new = "((defined(_M_X64) && !defined(_M_ARM64EC)) || defined(_M_IX86))"
+    if new in content:
+        return False
+    if content.count(old) != 2:
+        raise RuntimeError("libwebp CPU feature anchors not found twice")
+    path.write_text(content.replace(old, new), encoding="utf-8")
+    return True
+
+
 def apply_patch(skia_dir: Path) -> bool:
     changed = _patch_features(skia_dir / "include" / "private" / "SkFeatures.h")
     changed = _patch_build_gn(skia_dir / "BUILD.gn") or changed
     changed = _patch_raster_pipeline(skia_dir / "src" / "opts" / "SkRasterPipeline_opts.h") or changed
     changed = _patch_libwebp(skia_dir / "third_party" / "libwebp" / "BUILD.gn") or changed
+    changed = _patch_libwebp_cpu(skia_dir / "third_party" / "externals" / "libwebp" / "src" / "dsp" / "cpu.h") or changed
     return changed
 
 

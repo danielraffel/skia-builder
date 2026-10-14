@@ -23,6 +23,15 @@ LIBWEBP = """  third_party(\"libwebp_sse41\") {
     deps = [ \":libwebp_sse41\" ]
   }
 """
+LIBWEBP_CPU = """#if defined(_MSC_VER) && _MSC_VER > 1310 && \\
+    (defined(_M_X64) || defined(_M_IX86))
+#define WEBP_MSC_SSE2
+#endif
+#if defined(_MSC_VER) && _MSC_VER >= 1500 && \\
+    (defined(_M_X64) || defined(_M_IX86))
+#define WEBP_MSC_SSE41
+#endif
+"""
 
 
 def test_patch_is_idempotent_and_fail_closed_for_arm64ec() -> None:
@@ -35,6 +44,8 @@ def test_patch_is_idempotent_and_fail_closed_for_arm64ec() -> None:
         (root / "src" / "opts" / "SkRasterPipeline_opts.h").write_text(RASTER)
         (root / "third_party" / "libwebp").mkdir(parents=True)
         (root / "third_party" / "libwebp" / "BUILD.gn").write_text(LIBWEBP)
+        (root / "third_party" / "externals" / "libwebp" / "src" / "dsp").mkdir(parents=True)
+        (root / "third_party" / "externals" / "libwebp" / "src" / "dsp" / "cpu.h").write_text(LIBWEBP_CPU)
 
         assert apply_windows_arm64ec_avx.apply_patch(root)
         features = (root / "include" / "private" / "SkFeatures.h").read_text()
@@ -46,6 +57,9 @@ def test_patch_is_idempotent_and_fail_closed_for_arm64ec() -> None:
         assert "third_party(\"libwebp_sse41\")" in webp
         assert "if (!defined(skia_win_arm64ec) || !skia_win_arm64ec)" in webp
         assert 'deps += [ ":libwebp_sse41" ]' in webp
+        cpu = (root / "third_party" / "externals" / "libwebp" / "src" / "dsp" / "cpu.h").read_text()
+        assert cpu.count("!defined(_M_ARM64EC)") == 2
+        assert "defined(_M_X64)" in cpu
         assert not apply_windows_arm64ec_avx.apply_patch(root)
         assert (root / "include" / "private" / "SkFeatures.h").read_text() == features
         assert (root / "BUILD.gn").read_text() == build
@@ -61,11 +75,15 @@ def test_patch_does_not_remove_x64_detection() -> None:
         (root / "src" / "opts" / "SkRasterPipeline_opts.h").write_text(RASTER)
         (root / "third_party" / "libwebp").mkdir(parents=True)
         (root / "third_party" / "libwebp" / "BUILD.gn").write_text(LIBWEBP)
+        (root / "third_party" / "externals" / "libwebp" / "src" / "dsp").mkdir(parents=True)
+        (root / "third_party" / "externals" / "libwebp" / "src" / "dsp" / "cpu.h").write_text(LIBWEBP_CPU)
         apply_windows_arm64ec_avx.apply_patch(root)
         assert "defined(_M_X64)" in (root / "include" / "private" / "SkFeatures.h").read_text()
         assert 'current_cpu == "x64"' in (root / "BUILD.gn").read_text()
         webp = (root / "third_party" / "libwebp" / "BUILD.gn").read_text()
         assert 'deps += [ ":libwebp_sse41" ]' in webp
+        cpu = (root / "third_party" / "externals" / "libwebp" / "src" / "dsp" / "cpu.h").read_text()
+        assert "defined(_M_X64)" in cpu
 
 
 if __name__ == "__main__":

@@ -59,6 +59,23 @@ class Colors:
 def colored_print(message, color):
     print(f"{color}{message}{Colors.ENDC}")
 
+
+def windows_arch_gn_settings(arch: str, runtime_flag: str) -> tuple[str, list[str]]:
+    """Return the GN target CPU and MSVC flags for a Windows archive.
+
+    ``arm64ec`` is deliberately an explicit opt-in producer slice.  It uses
+    the ARM64 GN target for source selection, but asks MSVC/link.exe to emit
+    ARM64EC objects and libraries.  A pure ARM64 archive is ABI-incompatible
+    with ARM64EC consumers and must never be relabeled as one.
+    """
+    if arch == "Win32":
+        return "x86", [runtime_flag]
+    if arch == "arm64":
+        return "arm64", [runtime_flag, "/D_USE_STD_VECTOR_ALGORITHMS=0"]
+    if arch == "arm64ec":
+        return "arm64", [runtime_flag, "/arm64EC"]
+    return "x64", [runtime_flag]
+
 # Shared constants
 BASE_DIR = Path(__file__).resolve().parent / "build"
 DEPOT_TOOLS_PATH = BASE_DIR / "tmp" / "depot_tools"
@@ -473,7 +490,7 @@ class SkiaBuildScript:
             "mac": ["x86_64", "arm64", "universal"],
             "ios": ["x86_64", "arm64"],
             "visionos": ["arm64"],
-            "win": ["x64", "arm64", "Win32"],
+            "win": ["x64", "arm64", "arm64ec", "Win32"],
             "linux": ["x64", "arm64"],
             "wasm": ["wasm32"]
         }
@@ -667,7 +684,26 @@ class SkiaBuildScript:
     ]
 '''
         elif self.platform == "win":
-            gn_args += f"extra_cflags = [\"{'/MTd' if self.config == 'Debug' else '/MT'}\"]\n"
+            # Dawn is configured by Skia's GN-generated CMake sub-build.  Keep
+            # its compiler on the same MSVC STL/CRT ABI as Skia and the Pulp
+            # consumer; the workflow may have installed clang-cl for other
+            # Windows lanes, so override the inherited compiler environment
+            # explicitly for this platform.
+            os.environ["CC"] = "cl.exe"
+            os.environ["CXX"] = "cl.exe"
+            runtime_flag = '/MTd' if self.config == 'Debug' else '/MT'
+            # VS ARM64's vectorized STL entry points are not linkable from the
+            # ARM64 static runtime shipped with the toolset (it exposes
+            # ARM64EC-only #__std_* section names).  Keep the algorithms
+            # header-only for this producer slice; x64 remains vectorized.
+            target_cpu, msvc_flags = windows_arch_gn_settings(arch, runtime_flag)
+            os.environ["CFLAGS"] = f"{os.environ.get('CFLAGS', '')} {' '.join(msvc_flags)}".strip()
+            os.environ["CXXFLAGS"] = f"{os.environ.get('CXXFLAGS', '')} {' '.join(msvc_flags)}".strip()
+            gn_args += "extra_cflags = [" + ", ".join(f'"{flag}"' for flag in msvc_flags) + "]\n"
+            if arch == "arm64ec":
+                # GN's ARM64 target selects the Windows ARM source/toolchain;
+                # this linker flag is what makes the produced archive EC.
+                gn_args += 'extra_ldflags = ["/machine:ARM64EC"]\n'
             # Pulp consumes the Windows archives with MSVC.  Keep the
             # producer on the same STL/CRT ABI; the clang-produced ARM64
             # asset otherwise leaves __std_* symbols unresolved at link time
@@ -676,12 +712,12 @@ class SkiaBuildScript:
             gn_args += "cc = \"cl.exe\"\n"
             gn_args += "cxx = \"cl.exe\"\n"
             # Map architecture names to GN target_cpu values
-            if arch == "Win32":
-                gn_args += "target_cpu = \"x86\"\n"
-            elif arch == "arm64":
-                gn_args += "target_cpu = \"arm64\"\n"
+            if arch in ("arm64", "arm64ec"):
+                gn_args += f'target_cpu = "{target_cpu}"\n'
                 # OpenGL is not supported on Windows ARM64, Dawn/Graphite will be used
                 gn_args += "skia_use_gl = false\n"
+            elif arch == "Win32":
+                gn_args += "target_cpu = \"x86\"\n"
             else:  # x64
                 gn_args += "target_cpu = \"x64\"\n"
             # Find Clang installation - prefer standalone LLVM, fallback to VS bundled

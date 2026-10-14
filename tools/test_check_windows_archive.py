@@ -12,7 +12,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import check_windows_archive as cwa  # noqa: E402
 
-ARM64, X64 = 0xAA64, 0x8664
+ARM64, ARM64EC, X64 = 0xAA64, 0xA641, 0x8664
 
 
 def coff_object(machine: int) -> bytes:
@@ -48,8 +48,12 @@ def receipt(arch: str, config: str = "Release") -> dict:
                 "version": "Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36231 for ARM64",
                 "source": "toolchain.ninja",
             },
-            "dawn_cmake_compiler": {"driver": "clang-cl.exe", "path": r"C:\LLVM\bin\clang-cl.exe",
-                                    "version": "clang version 20.1.0"},
+            "dawn_cmake_compiler": {
+                "driver": "cl.exe",
+                "path": r"C:\VS\VC\Tools\MSVC\14.51.36231\bin\HostX64\arm64\cl.exe",
+                "version": "Microsoft (R) C/C++ Optimizing Compiler Version 19.51.36231 for ARM64",
+                "source": "build-skia.py MSVC ABI",
+            },
             "msvc_toolset_version": "14.51.36231",
             "windows_sdk_version": "10.0.26100.0",
             "visual_studio_vc_dir": r"C:\VS\VC",
@@ -92,6 +96,13 @@ class CheckWindowsArchive(unittest.TestCase):
                             receipt("arm64"))
         problems = cwa.check_archive(path)
         self.assertTrue(any("other machines" in p for p in problems), problems)
+
+    def test_good_arm64ec_archive_passes(self):
+        path = self.archive("skia-build-win-arm64ec-gpu-release.zip",
+                            {"build/win-gpu/lib/Release/arm64ec/skia.lib":
+                             lib(coff_object(ARM64EC), anon_object(ARM64EC))},
+                            receipt("arm64ec"))
+        self.assertEqual(cwa.check_archive(path), [])
 
     def test_x64_library_shipped_as_arm64_fails(self):
         path = self.archive("skia-build-win-arm64-gpu-release.zip",

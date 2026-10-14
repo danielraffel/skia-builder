@@ -27,7 +27,6 @@ import json
 import os
 import platform
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -36,7 +35,6 @@ from typing import Callable
 TOOLSET_RE = re.compile(r"^[0-9]{2}\.[0-9]{2}\.[0-9]{5}$")
 SDK_RE = re.compile(r"^[0-9]{2}\.[0-9]\.[0-9]{5}\.[0-9]$")
 CL_BANNER_RE = re.compile(r"C/C\+\+ Optimizing Compiler Version [0-9]+\.[0-9]+\.[0-9]+")
-CLANG_RE = re.compile(r"clang version [0-9]+\.[0-9]+\.[0-9]+")
 CL_PATH_RE = re.compile(
     r"([A-Za-z]:[^\"\n]*?[\\/]Tools[\\/]MSVC[\\/]([0-9]{2}\.[0-9]{2}\.[0-9]{5})"
     r"[\\/]bin[\\/]Host[A-Za-z0-9]+[\\/][A-Za-z0-9]+[\\/]cl\.exe)", re.IGNORECASE)
@@ -44,7 +42,6 @@ BAD_VALUE_RE = re.compile(r"unknown|error|no input files|not recognized|not foun
                           re.IGNORECASE)
 GN_TARGET_CPU = {"arm64": "arm64", "arm64ec": "arm64", "x64": "x64", "x86_64": "x64", "win32": "x86", "x86": "x86"}
 DEFAULT_WIN_SDK = r"C:\Program Files (x86)\Windows Kits\10"
-DEFAULT_CLANG_CL = r"C:\Program Files\LLVM\bin\clang-cl.exe"
 
 Runner = Callable[[list[str]], str]
 
@@ -109,14 +106,6 @@ def _first_matching_line(output: str, regex: re.Pattern) -> str:
     return output.splitlines()[0].strip() if output.strip() else "unknown"
 
 
-def resolve_clang_cl() -> str:
-    """The clang-cl Dawn's CMake sub-build uses: the workflow exports it as CC."""
-    for candidate in (os.environ.get("CC", ""), os.environ.get("CXX", "")):
-        if candidate.lower().endswith("clang-cl.exe"):
-            return candidate
-    return shutil.which("clang-cl.exe") or shutil.which("clang-cl") or DEFAULT_CLANG_CL
-
-
 def find_msvc_cl(vc_dir: Path | None, toolset: str | None, arch: str) -> Path | None:
     """Find the MSVC compiler GN can use for a Windows target.
 
@@ -156,7 +145,8 @@ def build_receipt(arch: str, configuration: str, variant: str, *,
     built = cl_from_toolchain_ninja(toolchain_ninja) if toolchain_ninja else None
     if built:
         cl, toolset = built
-    clang = resolve_clang_cl()
+    cl_version = (_first_matching_line(run([cl]), CL_BANNER_RE)
+                  if cl != "unknown" else "unknown")
     return {
         "schema_version": 1,
         "target": {"platform": "windows", "architecture": arch, "configuration": configuration,
@@ -165,13 +155,16 @@ def build_receipt(arch: str, configuration: str, variant: str, *,
             "skia_gn_compiler": {
                 "driver": "cl.exe", "path": cl,
                 # cl.exe prints its banner to stderr when run without arguments.
-                "version": _first_matching_line(run([cl]), CL_BANNER_RE) if cl != "unknown"
-                else "unknown",
+                "version": cl_version,
                 "source": "toolchain.ninja" if built else "gn find_msvc resolution",
             },
             "dawn_cmake_compiler": {
-                "driver": "clang-cl.exe", "path": clang,
-                "version": _first_matching_line(run([clang, "--version"]), CLANG_RE),
+                # build-skia.py deliberately sets CC/CXX=cl.exe and
+                # is_clang=false. Dawn's separate CMake sub-build therefore
+                # uses the same MSVC compiler and CRT as Skia.
+                "driver": "cl.exe", "path": cl,
+                "version": cl_version,
+                "source": "build-skia.py MSVC ABI",
             },
             "msvc_toolset_version": toolset or "unknown",
             "windows_sdk_version": sdk or "unknown",
@@ -227,10 +220,13 @@ def validate_receipt(receipt: dict, expect_arch: str | None = None,
     toolset = str(producer.get("msvc_toolset_version", ""))
     if toolset and toolset not in str(cl.get("path", "")):
         problems.append(f"skia_gn_compiler.path {cl.get('path')!r} is not from toolset {toolset}")
-    clang = producer.get("dawn_cmake_compiler") or {}
-    if not CLANG_RE.search(str(clang.get("version", ""))):
-        problems.append(f"dawn_cmake_compiler.version {clang.get('version')!r} "
-                        "is not a clang version line")
+    dawn = producer.get("dawn_cmake_compiler") or {}
+    if not CL_BANNER_RE.search(str(dawn.get("version", ""))):
+        problems.append(f"dawn_cmake_compiler.version {dawn.get('version')!r} "
+                        "is not a cl.exe banner")
+    if toolset and toolset not in str(dawn.get("path", "")):
+        problems.append(f"dawn_cmake_compiler.path {dawn.get('path')!r} "
+                        f"is not from toolset {toolset}")
     if expect_arch and str(target.get("architecture", "")).lower() != expect_arch.lower():
         problems.append(f"target.architecture {target.get('architecture')!r} != {expect_arch!r}")
     if expect_config and str(target.get("configuration", "")).lower() != expect_config.lower():

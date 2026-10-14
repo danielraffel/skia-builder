@@ -11,6 +11,8 @@ on:
       - '.github/workflows/lint.yml'
       - 'patches/apply_dawn_ios_visionos.py'
       - 'patches/test_apply_dawn_ios_visionos.py'
+      - 'patches/apply_dawn_windows_arm64_vector_stl.py'
+      - 'patches/test_apply_dawn_windows_arm64_vector_stl.py'
       - 'tools/check_release_coverage.py'
       - 'tools/skia_matrix.json'
       - 'tools/skia_release_lock.py'
@@ -40,6 +42,8 @@ on:
       - '.github/workflows/lint.yml'
       - 'patches/apply_dawn_ios_visionos.py'
       - 'patches/test_apply_dawn_ios_visionos.py'
+      - 'patches/apply_dawn_windows_arm64_vector_stl.py'
+      - 'patches/test_apply_dawn_windows_arm64_vector_stl.py'
       - 'tools/check_release_coverage.py'
       - 'tools/skia_matrix.json'
       - 'tools/skia_release_lock.py'
@@ -99,6 +103,7 @@ jobs:
       # Catches the chrome/m150 regression: a lane built but never released.
       - run: python3 tools/check_release_coverage.py
       - run: python3 patches/test_apply_dawn_ios_visionos.py
+      - run: python3 patches/test_apply_dawn_windows_arm64_vector_stl.py
       - run: python3 tools/test_skia_release_lock.py
       - run: python3 tools/test_matched_v8_link.py
       - run: python3 tools/test_windows_arch_flags.py
@@ -109,4 +114,4 @@ jobs:
       - run: python3 tools/test_check_windows_archive.py
       # Only main may write to a release.
       - run: python3 tools/test_publish_ref_gate.py
-      - run: python3 -m py_compile build-skia.py tools/skia_release_lock.py tools/matched_v8_link.py tools/release_asset_guard.py tools/check_windows_archive.py tools/write_windows_toolchain_provenance.py
+      - run: python3 -m py_compile build-skia.py patches/apply_dawn_windows_arm64_vector_stl.py tools/skia_release_lock.py tools/matched_v8_link.py tools/release_asset_guard.py tools/check_windows_archive.py tools/write_windows_toolchain_provenance.py

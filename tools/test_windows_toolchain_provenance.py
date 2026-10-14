@@ -131,6 +131,25 @@ class WindowsToolchainProvenanceTests(unittest.TestCase):
         self.assertEqual(producer["skia_gn_compiler"]["source"], "toolchain.ninja")
         self.assertIn("14.44.35207", producer["skia_gn_compiler"]["path"])
 
+    def test_toolchain_ninja_unescapes_windows_drive_colon(self):
+        ninja = self.tmp / "toolchain.ninja"
+        ninja.write_text(
+            'rule cxx\n  command = "C$:/Program Files/Microsoft Visual Studio/18/Enterprise/'
+            'VC/Tools/MSVC/14.44.35207/bin/HostX64/arm64/cl.exe" /nologo\n')
+        receipt = self.receipt(toolchain_ninja=ninja)
+        self.assertEqual(receipt["producer"]["msvc_toolset_version"], "14.44.35207")
+        self.assertEqual(receipt["producer"]["skia_gn_compiler"]["path"].split(":", 1)[0], "C")
+
+    def test_toolchain_ninja_decodes_ninja_space_escapes(self):
+        ninja = self.tmp / "toolchain-spaces.ninja"
+        ninja.write_text(
+            'rule cxx\n  command = C$:/Program$ Files/Microsoft$ Visual$ Studio/18/'
+            'Enterprise/VC/Tools/MSVC/14.44.35207/bin/HostX64/arm64/cl.exe\n')
+        built = MODULE.cl_from_toolchain_ninja(ninja)
+        self.assertIsNotNone(built)
+        assert built
+        self.assertIn("Program Files/Microsoft Visual Studio", built[0])
+
     def test_wrong_architecture_is_rejected(self):
         problems = MODULE.validate_receipt(self.receipt(), "x64", "Release")
         self.assertTrue(any("architecture" in p for p in problems), problems)

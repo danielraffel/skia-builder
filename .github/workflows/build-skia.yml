@@ -147,7 +147,9 @@ jobs:
           cells = json.load(open("tools/skia_matrix.json", encoding="utf-8"))
           requested = os.environ["PLATFORMS"].strip()
           if requested in ("", "all"):
-              selected = cells
+              # Experimental producer lanes are opt-in and never enter the
+              # normal release matrix. They can be run explicitly by selector.
+              selected = [cell for cell in cells if not cell.get("experimental", False)]
           else:
               selectors = {part.strip() for part in requested.split(",") if part.strip()}
               selected = [

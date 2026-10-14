@@ -205,6 +205,14 @@ py -3 build-skia.py -config Release -branch chrome/m153 -archs arm64ec win
 Do not rename a pure `arm64` archive to `arm64ec`; the archive identity must
 match the object and CRT ABI that produced it.
 
+The producer also has an opt-in Windows ARM CI lane. It uploads a workflow
+artifact only and never edits a release asset:
+
+```bash
+ghapp workflow run build-skia.yml -f platforms=win-arm64ec \
+  -f skip_release=true -f skia_branch=chrome/m153
+```
+
 ## CI / GitHub Actions
 
 The repository includes a GitHub Actions workflow (`.github/workflows/build-skia.yml`) that builds all platforms in parallel and creates releases tagged with the Skia branch name.

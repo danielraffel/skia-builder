@@ -724,22 +724,10 @@ class SkiaBuildScript:
                 gn_args += "target_cpu = \"x86\"\n"
             else:  # x64
                 gn_args += "target_cpu = \"x64\"\n"
-            # Find Clang installation - prefer standalone LLVM, fallback to VS bundled
-            clang_paths = [
-                "C:\\Program Files\\LLVM",
-                "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\VC\\Tools\\Llvm\\x64",
-                "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\Llvm\\x64",
-                "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Tools\\Llvm\\x64",
-            ]
-            clang_win = None
-            for path in clang_paths:
-                if os.path.isdir(path):
-                    clang_win = path
-                    break
-            if clang_win:
-                gn_args += f"clang_win = \"{clang_win}\"\n"
-            else:
-                colored_print("Warning: Clang/LLVM not found - build may fail", Colors.WARNING)
+            # Do not set clang_win here.  Skia's Windows toolchain selects
+            # clang-cl whenever clang_win is non-empty, even when is_clang is
+            # false.  ARM64EC must use the MSVC cl.exe toolchain so the Dawn
+            # archive and the provenance receipt describe the same producer.
         elif self.platform == "linux":
             gn_args += f"target_cpu = \"{'arm64' if arch == 'arm64' else 'x64'}\"\n"
         elif self.platform == "wasm":

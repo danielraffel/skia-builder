@@ -16,6 +16,8 @@ on:
       - 'tools/test_skia_release_lock.py'
       - 'tools/matched_v8_link.py'
       - 'tools/test_matched_v8_link.py'
+      - 'build-skia.py'
+      - 'tools/test_windows_arch_flags.py'
       - '.github/workflows/create-xcframework.yml'
       - 'tools/release_asset_guard.py'
       - 'tools/test_release_asset_guard.py'
@@ -97,6 +99,7 @@ jobs:
       - run: python3 patches/test_apply_dawn_ios_visionos.py
       - run: python3 tools/test_skia_release_lock.py
       - run: python3 tools/test_matched_v8_link.py
+      - run: python3 tools/test_windows_arch_flags.py
       # Published assets are immutable unless deliberately replaced, and
       # Windows archives ship a provable toolchain receipt.
       - run: python3 tools/test_release_asset_guard.py

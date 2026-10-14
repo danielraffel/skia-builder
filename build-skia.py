@@ -700,6 +700,10 @@ class SkiaBuildScript:
             os.environ["CFLAGS"] = f"{os.environ.get('CFLAGS', '')} {' '.join(msvc_flags)}".strip()
             os.environ["CXXFLAGS"] = f"{os.environ.get('CXXFLAGS', '')} {' '.join(msvc_flags)}".strip()
             gn_args += "extra_cflags = [" + ", ".join(f'"{flag}"' for flag in msvc_flags) + "]\n"
+            # Both pure ARM64 and ARM64EC use GN's arm64 target.  Keep the
+            # ABI distinction explicit so Dawn's CMake action can receive the
+            # same compiler/linker mode as Skia.
+            gn_args += f'skia_win_arm64ec = {"true" if arch == "arm64ec" else "false"}\n'
             if arch == "arm64ec":
                 # GN's ARM64 target selects the Windows ARM source/toolchain;
                 # this linker flag is what makes the produced archive EC.
@@ -1264,12 +1268,29 @@ class SkiaBuildScript:
         else:
             gn_args = BASIC_GN_ARGS + PLATFORM_GN_ARGS[self.platform]
         gn_args += RELEASE_GN_ARGS
+        target_cpu = arch
+        if self.platform == "win":
+            # ARM64EC uses GN's ARM64 source/toolchain selection.  The EC ABI
+            # is selected by the explicit compiler/linker flags below and the
+            # custom arg consumed by Skia's Dawn BUILD.gn action.
+            target_cpu, msvc_flags = windows_arch_gn_settings(
+                arch, '/MTd' if self.config == 'Debug' else '/MT')
         gn_args += f"""
         is_debug = {"true" if self.config == 'Debug' else "false"}
         is_official_build = {"false" if self.config == 'Debug' else "true"}
-        target_cpu = "{arch}"
+        target_cpu = "{target_cpu}"
         variant = "{self.variant}"
         """
+        if self.platform == "win":
+            gn_args += "\n".join([
+                "is_clang = false",
+                'cc = "cl.exe"',
+                'cxx = "cl.exe"',
+                "extra_cflags = [" + ", ".join(f'\"{flag}\"' for flag in msvc_flags) + "]",
+                "skia_win_arm64ec = " + ("true" if arch == "arm64ec" else "false"),
+                *(["extra_ldflags = [\"/machine:ARM64EC\"]"]
+                  if arch == "arm64ec" else []),
+            ]) + "\n"
         # Remove leading whitespace from each line while preserving structure
         lines = [line.strip() for line in gn_args.strip().splitlines()]
         return '\n'.join(line for line in lines if line)

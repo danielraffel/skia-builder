@@ -28,7 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from write_windows_toolchain_provenance import validate_receipt  # noqa: E402
 
-NAME_RE = re.compile(r"^skia-build-win-(?P<arch>arm64|x64)-(?P<variant>[a-z0-9]+)-(?P<config>release|debug)\.zip$")
+NAME_RE = re.compile(r"^skia-build-win-(?P<arch>arm64|arm64ec|x64)-(?P<variant>[a-z0-9]+)-(?P<config>release|debug)\.zip$")
 MACHINES = {0x8664: "x64", 0xAA64: "arm64", 0xA641: "arm64ec", 0x014C: "x86", 0x01C4: "arm"}
 AR_MAGIC = b"!<arch>\n"
 SPECIAL_MEMBERS = {"/", "//", "/<ECSYMBOLS>/", "/<HYBRIDMAP>/"}

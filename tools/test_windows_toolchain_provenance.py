@@ -90,7 +90,9 @@ class WindowsToolchainProvenanceTests(unittest.TestCase):
         self.assertTrue(producer["skia_gn_compiler"]["path"].endswith(
             os.path.join("MSVC", TOOLSET, "bin", "HostX64", "arm64", "cl.exe")))
         self.assertEqual(producer["skia_gn_compiler"]["version"], CL_BANNER)
-        self.assertEqual(producer["dawn_cmake_compiler"]["version"], "clang version 20.1.0")
+        self.assertEqual(producer["dawn_cmake_compiler"]["version"], CL_BANNER)
+        self.assertEqual(producer["dawn_cmake_compiler"]["driver"], "cl.exe")
+        self.assertIn(os.path.join("MSVC", TOOLSET), producer["dawn_cmake_compiler"]["path"])
         self.assertEqual(receipt["runtime"]["compile_flag"], "/MT")
         self.assertIn(TOOLSET, receipt["runtime"]["consumer_requirement"])
         self.assertEqual(MODULE.validate_receipt(receipt, "arm64", "Release"), [])

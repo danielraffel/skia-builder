@@ -38,6 +38,9 @@ CL_BANNER_RE = re.compile(r"C/C\+\+ Optimizing Compiler Version [0-9]+\.[0-9]+\.
 CL_PATH_RE = re.compile(
     r"([A-Za-z]:[^\"\n]*?[\\/]Tools[\\/]MSVC[\\/]([0-9]{2}\.[0-9]{2}\.[0-9]{5})"
     r"[\\/]bin[\\/]Host[A-Za-z0-9]+[\\/][A-Za-z0-9]+[\\/]cl\.exe)", re.IGNORECASE)
+CL_ANY_MSVC_RE = re.compile(
+    r"([A-Za-z](?:\$:|:)[^\"\r\n]*?[\\/]MSVC[\\/]"
+    r"([0-9]{2}\.[0-9]{2}\.[0-9]{5})[^\"\r\n]*?[\\/]cl\.exe)", re.IGNORECASE)
 BAD_VALUE_RE = re.compile(r"unknown|error|no input files|not recognized|not found|cannot find",
                           re.IGNORECASE)
 GN_TARGET_CPU = {"arm64": "arm64", "arm64ec": "arm64", "x64": "x64", "x86_64": "x64", "win32": "x86", "x86": "x86"}
@@ -102,7 +105,7 @@ def cl_from_toolchain_ninja(path: Path) -> tuple[str, str] | None:
     # GN/Ninja serializes Windows drive colons and spaces as `$:` and `$ `.
     # Decode the command text before matching and handing the path to cl.exe.
     content = unescape_ninja_value(path.read_text(encoding="utf-8", errors="replace"))
-    match = CL_PATH_RE.search(content)
+    match = CL_PATH_RE.search(content) or CL_ANY_MSVC_RE.search(content)
     if not match:
         return None
     return (match.group(1), match.group(2))

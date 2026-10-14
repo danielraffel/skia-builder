@@ -150,6 +150,15 @@ class WindowsToolchainProvenanceTests(unittest.TestCase):
         assert built
         self.assertIn("Program Files/Microsoft Visual Studio", built[0])
 
+    def test_toolchain_ninja_accepts_msvc_path_without_tools_anchor(self):
+        ninja = self.tmp / "toolchain-fallback.ninja"
+        ninja.write_text(
+            'rule cxx\n  command = "C$:/VS/MSVC/14.44.35207/bin/HostARM64/arm64/cl.exe"\n')
+        built = MODULE.cl_from_toolchain_ninja(ninja)
+        self.assertIsNotNone(built)
+        assert built
+        self.assertEqual(built[1], "14.44.35207")
+
     def test_wrong_architecture_is_rejected(self):
         problems = MODULE.validate_receipt(self.receipt(), "x64", "Release")
         self.assertTrue(any("architecture" in p for p in problems), problems)

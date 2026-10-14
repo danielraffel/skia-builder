@@ -66,6 +66,8 @@ def main() -> int:
     missing = []
     checked = []
     for entry in matrix:
+        if entry.get("experimental", False):
+            continue
         name = archive_name(entry)
         zip_name = f"{name}.zip"
         checked.append(zip_name)

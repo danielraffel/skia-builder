@@ -71,4 +71,5 @@ def apply_patch(skia_dir: Path) -> bool:
 
 if __name__ == "__main__":
     changed = apply_patch(Path(sys.argv[1]))
-    print("  Patched Dawn Windows ARM64 vectorized STL guard" if changed else "  Dawn Windows ARM64 vectorized STL guard already patched")
+    print("  Patched Dawn Windows ARM64/ARM64EC CMake flags" if changed
+          else "  Dawn Windows ARM64/ARM64EC CMake flags already patched")

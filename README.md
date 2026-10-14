@@ -76,6 +76,11 @@ Windows publishes separate GPU archives for each supported architecture:
 | `skia-build-win-x64-gpu-release.zip` | `x64` | Windows x64 and x64 emulation on Windows ARM64 |
 | `skia-build-win-x64-gpu-debug.zip` | `x64` | Windows x64 debug investigations |
 
+An experimental `arm64ec` producer can be configured locally with
+`-archs arm64ec`. It emits ARM64EC objects using MSVC `/arm64EC` and
+`/machine:ARM64EC`; it is intentionally not in the published matrix until a
+matching Skia/Dawn and Pulp consumer link/runtime receipt exists.
+
 The ARM64 archive uses Dawn/Direct3D; OpenGL is disabled for that target. The
 release workflow builds the ARM64 archive alongside the x64 archives. To
 backfill an existing milestone release without rebuilding every platform, run
@@ -189,6 +194,16 @@ target. Those targets require a separately produced Skia/Dawn archive built
 with the matching ARM64EC/ARM64X compiler and CRT; until that producer lane
 exists, consumers should fail closed rather than selecting the ARM64 or x64
 archive by host architecture.
+
+To exercise the experimental producer locally (on a Windows ARM64 host with
+the matching MSVC toolset):
+
+```bash
+py -3 build-skia.py -config Release -branch chrome/m153 -archs arm64ec win
+```
+
+Do not rename a pure `arm64` archive to `arm64ec`; the archive identity must
+match the object and CRT ABI that produced it.
 
 ## CI / GitHub Actions
 

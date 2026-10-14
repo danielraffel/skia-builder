@@ -6,6 +6,7 @@ from pathlib import Path
 
 
 EC_MARKER = '"--cxx_flags=/arm64EC"'
+ARCHIVE_FLAG_MARKER = "      combine_obj_cmd.extend(args.ld_flags)"
 
 
 def _patch_cmake_cpu_map(cmake_utils: Path) -> bool:
@@ -21,11 +22,25 @@ def _patch_cmake_cpu_map(cmake_utils: Path) -> bool:
     return True
 
 
+def _patch_cmake_archive_flags(cmake_utils: Path) -> bool:
+    """Pass Dawn's linker machine flags to the MSVC archive command too."""
+    content = cmake_utils.read_text(encoding="utf-8")
+    if ARCHIVE_FLAG_MARKER in content:
+        return False
+    needle = "    combine_obj_cmd = [\n        linker_exe, \"/LIB\", f\"/OUT:{lib_name}\", f\"@{response_file_name}\"\n    ]\n  else:"
+    replacement = "    combine_obj_cmd = [\n        linker_exe, \"/LIB\", f\"/OUT:{lib_name}\", f\"@{response_file_name}\"\n    ]\n    if args.ld_flags:\n      # lib.exe does not inherit CMake's linker machine mode. Keep the\n      # combined archive in the same architecture as its object files.\n      combine_obj_cmd.extend(args.ld_flags)\n  else:"
+    if needle not in content:
+        raise RuntimeError("Dawn CMake archive command anchor not found")
+    cmake_utils.write_text(content.replace(needle, replacement, 1), encoding="utf-8")
+    return True
+
+
 def apply_patch(skia_dir: Path) -> bool:
     build_gn = skia_dir / "third_party" / "dawn" / "BUILD.gn"
     content = build_gn.read_text(encoding="utf-8")
     cmake_utils = skia_dir / "third_party" / "dawn" / "cmake_utils.py"
     changed = _patch_cmake_cpu_map(cmake_utils)
+    changed = _patch_cmake_archive_flags(cmake_utils) or changed
     if EC_MARKER in content:
         return changed
 

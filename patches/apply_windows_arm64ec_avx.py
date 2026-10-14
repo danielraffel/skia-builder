@@ -30,9 +30,24 @@ def _patch_build_gn(path: Path) -> bool:
     return True
 
 
+def _patch_raster_pipeline(path: Path) -> bool:
+    content = path.read_text(encoding="utf-8")
+    old = "#elif defined(_MSC_VER)\n    // Even if not vectorized, this lets us pass {r,g,b,a} as registers,"
+    new = ("#elif defined(_MSC_VER) && !defined(_M_ARM64EC)\n"
+           "    // ARM64EC does not implement MSVC's __vectorcall convention.\n"
+           "    // Even if not vectorized, this lets us pass {r,g,b,a} as registers,")
+    if new in content:
+        return False
+    if old not in content:
+        raise RuntimeError("SkRasterPipeline ABI anchor not found")
+    path.write_text(content.replace(old, new, 1), encoding="utf-8")
+    return True
+
+
 def apply_patch(skia_dir: Path) -> bool:
     changed = _patch_features(skia_dir / "include" / "private" / "SkFeatures.h")
     changed = _patch_build_gn(skia_dir / "BUILD.gn") or changed
+    changed = _patch_raster_pipeline(skia_dir / "src" / "opts" / "SkRasterPipeline_opts.h") or changed
     return changed
 
 

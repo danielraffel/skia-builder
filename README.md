@@ -183,6 +183,13 @@ Direct3D (OpenGL is disabled for this target):
 py -3 build-skia.py -config Release -branch chrome/m153 -archs arm64 win
 ```
 
+The published `arm64` archive is a pure ARM64 provider. It is not an
+ARM64EC/ARM64X provider and must not be consumed by an ARM64EC or ARM64X Pulp
+target. Those targets require a separately produced Skia/Dawn archive built
+with the matching ARM64EC/ARM64X compiler and CRT; until that producer lane
+exists, consumers should fail closed rather than selecting the ARM64 or x64
+archive by host architecture.
+
 ## CI / GitHub Actions
 
 The repository includes a GitHub Actions workflow (`.github/workflows/build-skia.yml`) that builds all platforms in parallel and creates releases tagged with the Skia branch name.

@@ -42,7 +42,7 @@ CL_PATH_RE = re.compile(
     r"[\\/]bin[\\/]Host[A-Za-z0-9]+[\\/][A-Za-z0-9]+[\\/]cl\.exe)", re.IGNORECASE)
 BAD_VALUE_RE = re.compile(r"unknown|error|no input files|not recognized|not found|cannot find",
                           re.IGNORECASE)
-GN_TARGET_CPU = {"arm64": "arm64", "x64": "x64", "x86_64": "x64", "win32": "x86", "x86": "x86"}
+GN_TARGET_CPU = {"arm64": "arm64", "arm64ec": "arm64", "x64": "x64", "x86_64": "x64", "win32": "x86", "x86": "x86"}
 DEFAULT_WIN_SDK = r"C:\Program Files (x86)\Windows Kits\10"
 DEFAULT_CLANG_CL = r"C:\Program Files\LLVM\bin\clang-cl.exe"
 
@@ -117,6 +117,27 @@ def resolve_clang_cl() -> str:
     return shutil.which("clang-cl.exe") or shutil.which("clang-cl") or DEFAULT_CLANG_CL
 
 
+def find_msvc_cl(vc_dir: Path | None, toolset: str | None, arch: str) -> Path | None:
+    """Find the MSVC compiler GN can use for a Windows target.
+
+    ARM64 GitHub images do not all expose the same host-tool directory.  The
+    ARM64EC compiler is accepted by the ARM64 cl.exe when passed `/arm64EC`,
+    so probe the explicit EC directory first and then the ordinary ARM64
+    compiler as a compatibility fallback.  Never invent a path: callers must
+    validate the resulting banner.
+    """
+    if not vc_dir or not toolset:
+        return None
+    target = GN_TARGET_CPU.get(arch.lower(), arch.lower())
+    target_dirs = ["arm64ec", target] if arch.lower() == "arm64ec" else [target]
+    for host in ("HostX64", "HostARM64"):
+        for target_dir in target_dirs:
+            candidate = vc_dir / "Tools" / "MSVC" / toolset / "bin" / host / target_dir / "cl.exe"
+            if candidate.is_file():
+                return candidate
+    return None
+
+
 def build_receipt(arch: str, configuration: str, variant: str, *,
                   vc_dir: Path | None = None, win_sdk: Path | None = None,
                   toolchain_ninja: Path | None = None, run: Runner = _run) -> dict:
@@ -128,9 +149,10 @@ def build_receipt(arch: str, configuration: str, variant: str, *,
     sdk_root = win_sdk or Path(os.environ.get("WindowsSdkDir", "").rstrip("\\/") or DEFAULT_WIN_SDK)
     sdk = os.environ.get("WindowsSDKVersion", "").strip("\\/ ") or highest_version_dir(
         sdk_root / "Include", SDK_RE.pattern.strip("^$"))
-    # gn/toolchain/BUILD.gn: $win_vc/Tools/MSVC/$ver/bin/HostX64/$target_cpu/cl.exe
-    cl = str(vc_dir / "Tools" / "MSVC" / toolset / "bin" / "HostX64" / target_cpu / "cl.exe") \
-        if vc_dir and toolset else "unknown"
+    # gn/toolchain/BUILD.gn normally uses HostX64; ARM images may expose only
+    # HostARM64, and ARM64EC may share the ARM64 compiler with /arm64EC.
+    cl_path = find_msvc_cl(vc_dir, toolset, arch)
+    cl = str(cl_path) if cl_path else "unknown"
     built = cl_from_toolchain_ninja(toolchain_ninja) if toolchain_ninja else None
     if built:
         cl, toolset = built

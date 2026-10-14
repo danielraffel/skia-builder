@@ -46,7 +46,12 @@ class Layout:
     def __init__(self, root: pathlib.Path):
         self.vc = root / "VS" / "18" / "Enterprise" / "VC"
         for version in ("14.44.35207", TOOLSET, "not-a-version"):
-            (self.vc / "Tools" / "MSVC" / version).mkdir(parents=True)
+            toolset = self.vc / "Tools" / "MSVC" / version
+            toolset.mkdir(parents=True)
+            if version == TOOLSET:
+                compiler = toolset / "bin" / "HostX64" / "arm64" / "cl.exe"
+                compiler.parent.mkdir(parents=True)
+                compiler.write_text("")
         self.sdk = root / "Windows Kits" / "10"
         for version in ("10.0.22621.0", SDK, "wdf"):
             (self.sdk / "Include" / version).mkdir(parents=True)
@@ -89,6 +94,14 @@ class WindowsToolchainProvenanceTests(unittest.TestCase):
         self.assertEqual(receipt["runtime"]["compile_flag"], "/MT")
         self.assertIn(TOOLSET, receipt["runtime"]["consumer_requirement"])
         self.assertEqual(MODULE.validate_receipt(receipt, "arm64", "Release"), [])
+
+    def test_arm64ec_uses_arm64_compiler_with_explicit_target_architecture(self):
+        receipt = MODULE.build_receipt("arm64ec", "Release", "gpu", vc_dir=self.layout.vc,
+                                       win_sdk=self.layout.sdk, run=fake_run)
+        self.assertEqual(receipt["target"]["architecture"], "arm64ec")
+        self.assertTrue(receipt["producer"]["skia_gn_compiler"]["path"].endswith(
+            os.path.join("HostX64", "arm64", "cl.exe")))
+        self.assertEqual(MODULE.validate_receipt(receipt, "arm64ec", "Release"), [])
 
     def test_unresolvable_toolchain_fails_validation(self):
         receipt = MODULE.build_receipt("arm64", "Release", "gpu", vc_dir=self.tmp / "missing",

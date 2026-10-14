@@ -1,14 +1,18 @@
 diff --git a/gn/skia/BUILD.gn b/gn/skia/BUILD.gn
 --- a/gn/skia/BUILD.gn
 +++ b/gn/skia/BUILD.gn
-@@ -14,6 +14,7 @@ declare_args() {
+@@ -13,7 +13,8 @@ declare_args() {
+   extra_asmflags = []
+   extra_cflags = []
    extra_cflags_c = []
    extra_cflags_cc = []
    extra_ldflags = []
 +  extra_arflags = []
  
    malloc = ""
-@@ -672,6 +673,7 @@ config("extra_flags") {
+@@ -671,7 +672,8 @@ config("extra_flags") {
+     asmflags = extra_asmflags
+     cflags = extra_cflags
      cflags_c = extra_cflags_c
      cflags_cc = extra_cflags_cc
      ldflags = extra_ldflags

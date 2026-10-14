@@ -131,6 +131,29 @@ class WindowsToolchainProvenanceTests(unittest.TestCase):
         self.assertEqual(producer["skia_gn_compiler"]["source"], "toolchain.ninja")
         self.assertIn("14.44.35207", producer["skia_gn_compiler"]["path"])
 
+    def test_toolchain_ninja_decodes_ninja_windows_path_escapes(self):
+        ninja = self.tmp / "toolchain-escaped.ninja"
+        ninja.write_text(
+            'rule cxx\n  command = "C$:/Program$ Files/Microsoft$ Visual$ Studio/18/'
+            'Enterprise/VC/Tools/MSVC/14.44.35207/bin/HostX64/arm64/cl.exe" /nologo\n')
+        built = MODULE.cl_from_toolchain_ninja(ninja)
+        self.assertIsNotNone(built)
+        assert built
+        self.assertEqual(
+            built[0],
+            r"C:/Program Files/Microsoft Visual Studio/18/Enterprise/VC/Tools/MSVC/14.44.35207/"
+            r"bin/HostX64/arm64/cl.exe",
+        )
+        self.assertEqual(built[1], "14.44.35207")
+
+    def test_ninja_literal_unescape_preserves_variable_references(self):
+        self.assertEqual(
+            MODULE.unescape_ninja_value(
+                "$edition ${toolchain} C$:/Program$ Files/SDK/$$cl.exe"
+            ),
+            "$edition ${toolchain} C:/Program Files/SDK/$cl.exe",
+        )
+
     def test_wrong_architecture_is_rejected(self):
         problems = MODULE.validate_receipt(self.receipt(), "x64", "Release")
         self.assertTrue(any("architecture" in p for p in problems), problems)

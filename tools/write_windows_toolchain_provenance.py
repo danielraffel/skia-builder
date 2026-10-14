@@ -46,6 +46,17 @@ DEFAULT_WIN_SDK = r"C:\Program Files (x86)\Windows Kits\10"
 Runner = Callable[[list[str]], str]
 
 
+def unescape_ninja_value(value: str) -> str:
+    """Decode Ninja's literal escapes without expanding variable references.
+
+    GN's Windows Ninja command writer escapes literal ``$``, spaces, and drive
+    colons as ``$$``, ``$ ``, and ``$:``.  Leave ``$name`` and ``${name}``
+    references untouched; expanding those would require Ninja's variable
+    scope and could fabricate a compiler path.
+    """
+    return re.sub(r"\$([$: ])", r"\1", value)
+
+
 def _run(args: list[str]) -> str:
     try:
         result = subprocess.run(args, check=False, capture_output=True, text=True, timeout=60)
@@ -94,7 +105,12 @@ def cl_from_toolchain_ninja(path: Path) -> tuple[str, str] | None:
     """Return (cl.exe path, toolset) that GN wrote into toolchain.ninja."""
     if not path.is_file():
         return None
-    match = CL_PATH_RE.search(path.read_text(encoding="utf-8", errors="replace"))
+    # GN/Ninja serializes a Windows drive colon and spaces as `$:` and `$ `.
+    # Decode the command text before matching and before handing the path to
+    # the compiler banner probe; otherwise provenance fails closed even when
+    # the build used a valid MSVC toolchain.
+    content = unescape_ninja_value(path.read_text(encoding="utf-8", errors="replace"))
+    match = CL_PATH_RE.search(content)
     return (match.group(1), match.group(2)) if match else None
 
 

@@ -27,6 +27,8 @@ on:
       - 'tools/requirements-lint.txt'
       - 'tools/test_lint_requirements.py'
       - 'tools/test_publish_ref_gate.py'
+      # Any workflow may gain release write access; the gate test reads them all.
+      - '.github/workflows/**'
   push:
     branches: [main]
     paths:
@@ -51,6 +53,8 @@ on:
       - 'tools/requirements-lint.txt'
       - 'tools/test_lint_requirements.py'
       - 'tools/test_publish_ref_gate.py'
+      # Any workflow may gain release write access; the gate test reads them all.
+      - '.github/workflows/**'
   workflow_dispatch:
 
 jobs:

@@ -133,6 +133,10 @@ class WindowsToolchainProvenanceTests(unittest.TestCase):
     def test_receipt_is_json_serializable(self):
         json.dumps(self.receipt())
 
+    def test_arm64_vector_stl_guard_is_present(self):
+        source = (ROOT / "build-skia.py").read_text(encoding="utf-8")
+        self.assertIn("_USE_STD_VECTOR_ALGORITHMS=0", source)
+
 
 if __name__ == "__main__":
     unittest.main()

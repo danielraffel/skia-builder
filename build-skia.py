@@ -674,7 +674,15 @@ class SkiaBuildScript:
             # explicitly for this platform.
             os.environ["CC"] = "cl.exe"
             os.environ["CXX"] = "cl.exe"
-            gn_args += f"extra_cflags = [\"{'/MTd' if self.config == 'Debug' else '/MT'}\"]\n"
+            runtime_flag = '/MTd' if self.config == 'Debug' else '/MT'
+            # VS ARM64's vectorized STL entry points are not linkable from the
+            # ARM64 static runtime shipped with the toolset (it exposes
+            # ARM64EC-only #__std_* section names).  Keep the algorithms
+            # header-only for this producer slice; x64 remains vectorized.
+            vector_stl_flag = ' /D_USE_STD_VECTOR_ALGORITHMS=0' if arch == 'arm64' else ''
+            os.environ["CFLAGS"] = f"{os.environ.get('CFLAGS', '')} {runtime_flag}{vector_stl_flag}".strip()
+            os.environ["CXXFLAGS"] = f"{os.environ.get('CXXFLAGS', '')} {runtime_flag}{vector_stl_flag}".strip()
+            gn_args += f'extra_cflags = ["{runtime_flag}", "/D_USE_STD_VECTOR_ALGORITHMS=0"]\n' if arch == 'arm64' else f'extra_cflags = ["{runtime_flag}"]\n'
             # Pulp consumes the Windows archives with MSVC.  Keep the
             # producer on the same STL/CRT ABI; the clang-produced ARM64
             # asset otherwise leaves __std_* symbols unresolved at link time

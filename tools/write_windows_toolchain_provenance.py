@@ -38,6 +38,15 @@ CL_BANNER_RE = re.compile(r"C/C\+\+ Optimizing Compiler Version [0-9]+\.[0-9]+\.
 CL_PATH_RE = re.compile(
     r"([A-Za-z]:[^\"\n]*?[\\/]Tools[\\/]MSVC[\\/]([0-9]{2}\.[0-9]{2}\.[0-9]{5})"
     r"[\\/]bin[\\/]Host[A-Za-z0-9]+[\\/][A-Za-z0-9]+[\\/]cl\.exe)", re.IGNORECASE)
+# GN's MSVC toolchain template keeps ``MSVC/<toolset>/.../cl.exe`` stable, but
+# the host/target directory layout is supplied by the selected Windows image.
+# Keep the strict matcher above for the usual layout and use this fallback for
+# valid MSVC paths whose intermediate directories differ (for example an
+# ARM64EC host/target installation).
+CL_PATH_FALLBACK_RE = re.compile(
+    r"(?P<path>[A-Za-z]:[^\"\r\n]*?[\\/]MSVC[\\/]"
+    r"(?P<toolset>[0-9]{2}\.[0-9]{2}\.[0-9]{5})"
+    r"[^\"\r\n]*?[\\/]cl\.exe)", re.IGNORECASE)
 BAD_VALUE_RE = re.compile(r"unknown|error|no input files|not recognized|not found|cannot find",
                           re.IGNORECASE)
 GN_TARGET_CPU = {"arm64": "arm64", "arm64ec": "arm64", "x64": "x64", "x86_64": "x64", "win32": "x86", "x86": "x86"}
@@ -103,9 +112,10 @@ def cl_from_toolchain_ninja(path: Path) -> tuple[str, str] | None:
     # Decode the command text before matching and handing the path to cl.exe.
     content = unescape_ninja_value(path.read_text(encoding="utf-8", errors="replace"))
     match = CL_PATH_RE.search(content)
-    if not match:
-        return None
-    return (match.group(1), match.group(2))
+    if match:
+        return (match.group(1), match.group(2))
+    fallback = CL_PATH_FALLBACK_RE.search(content)
+    return (fallback.group("path"), fallback.group("toolset")) if fallback else None
 
 
 def _first_matching_line(output: str, regex: re.Pattern) -> str:

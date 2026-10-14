@@ -150,6 +150,23 @@ class WindowsToolchainProvenanceTests(unittest.TestCase):
         assert built
         self.assertIn("Program Files/Microsoft Visual Studio", built[0])
 
+    def test_toolchain_ninja_accepts_arm64ec_msvc_layout_without_host_shape(self):
+        ninja = self.tmp / "toolchain-arm64ec.ninja"
+        ninja.write_text(
+            'rule cxx\n  command = "C$:/Program$ Files/Microsoft$ Visual$ Studio/18/'
+            'Enterprise/VC/Tools/MSVC/14.51.36231/bin/HostARM64/arm64ec/clang-wrapper/'
+            'cl.exe" /arm64EC\n'
+        )
+        built = MODULE.cl_from_toolchain_ninja(ninja)
+        self.assertEqual(
+            built,
+            (
+                "C:/Program Files/Microsoft Visual Studio/18/Enterprise/VC/Tools/MSVC/"
+                "14.51.36231/bin/HostARM64/arm64ec/clang-wrapper/cl.exe",
+                "14.51.36231",
+            ),
+        )
+
     def test_wrong_architecture_is_rejected(self):
         problems = MODULE.validate_receipt(self.receipt(), "x64", "Release")
         self.assertTrue(any("architecture" in p for p in problems), problems)

@@ -26,6 +26,7 @@ on:
       - 'tools/testdata/**'
       - 'tools/requirements-lint.txt'
       - 'tools/test_lint_requirements.py'
+      - 'tools/test_publish_ref_gate.py'
   push:
     branches: [main]
     paths:
@@ -49,6 +50,7 @@ on:
       - 'tools/testdata/**'
       - 'tools/requirements-lint.txt'
       - 'tools/test_lint_requirements.py'
+      - 'tools/test_publish_ref_gate.py'
   workflow_dispatch:
 
 jobs:
@@ -96,4 +98,6 @@ jobs:
       - run: python3 tools/test_release_asset_guard.py
       - run: python3 tools/test_windows_toolchain_provenance.py
       - run: python3 tools/test_check_windows_archive.py
+      # Only main may write to a release.
+      - run: python3 tools/test_publish_ref_gate.py
       - run: python3 -m py_compile build-skia.py tools/skia_release_lock.py tools/matched_v8_link.py tools/release_asset_guard.py tools/check_windows_archive.py tools/write_windows_toolchain_provenance.py

@@ -90,8 +90,18 @@ jobs:
           REPLACE_ASSET: ${{ inputs.replace_asset }}
           REPLACE_REASON: ${{ inputs.replace_reason }}
           GH_TOKEN: ${{ github.token }}
+          SKIP_RELEASE: ${{ inputs.skip_release }}
+          PLATFORMS: ${{ inputs.platforms || 'all' }}
         run: |
           set -euo pipefail
+          # Only main may write to a release. The publish jobs also carry this
+          # condition; failing here says so before the build instead of
+          # silently skipping the publish at the end of it.
+          if [ "$SKIP_RELEASE" != "true" ] && [ "$GITHUB_REF" != "refs/heads/main" ] \
+             && { [ "$PLATFORMS" = "all" ] || [ -n "$RELEASE_TAG" ]; }; then
+            echo "::error::publishing a release is allowed only from main (this run is $GITHUB_REF); dispatch from main, or set skip_release"
+            exit 1
+          fi
           if [ -n "$REPLACE_ASSET" ] && [ -z "$(printf '%s' "$REPLACE_REASON" | tr -d '[:space:]')" ]; then
             echo "::error::replace_asset=$REPLACE_ASSET requires replace_reason"
             exit 1
@@ -704,7 +714,7 @@ jobs:
           path: Skia.xcframework.zip
 
   create-release:
-    if: ${{ !inputs.skip_release && inputs.platforms == 'all' }}
+    if: ${{ !inputs.skip_release && inputs.platforms == 'all' && github.ref == 'refs/heads/main' }}
     needs: [resolve-skia, build-skia, create-xcframework, portable-linux-x64]
     runs-on: ubuntu-latest
     env:
@@ -797,7 +807,7 @@ jobs:
   # all-platform release path unchanged while allowing m153 and later tags to
   # gain the ARM64 artifact independently.
   publish-windows-arm64-backfill:
-    if: ${{ !inputs.skip_release && inputs.platforms == 'win-arm64' && inputs.release_tag != '' }}
+    if: ${{ !inputs.skip_release && inputs.platforms == 'win-arm64' && inputs.release_tag != '' && github.ref == 'refs/heads/main' }}
     needs: [build-skia]
     runs-on: ubuntu-24.04
     steps:

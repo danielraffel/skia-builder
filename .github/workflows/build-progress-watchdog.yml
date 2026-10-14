@@ -33,6 +33,8 @@ concurrency:
 
 jobs:
   report:
+    # contents: write reaches the releases too, so only main's copy runs.
+    if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout watchdog scripts

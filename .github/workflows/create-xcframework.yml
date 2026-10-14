@@ -23,6 +23,9 @@ env:
 
 jobs:
   create-xcframework:
+    # Only main may write to a release: a branch that predates a guard
+    # change would otherwise publish with its own, older copy of it.
+    if: ${{ !inputs.upload_to_release || github.ref == 'refs/heads/main' }}
     runs-on: macos-15
     permissions:
       contents: write

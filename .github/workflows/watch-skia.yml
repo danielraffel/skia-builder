@@ -97,6 +97,8 @@ jobs:
   reconcile-matched-v8-links:
     # The exact V8 tag is not known when Skia publishes. Reconcile after the
     # matched build completes without giving v8-builder cross-repo write access.
+    # It edits release notes, so only main's copy of this job may run.
+    if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

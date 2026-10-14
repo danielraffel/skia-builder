@@ -39,6 +39,7 @@ def test_arm64ec_summary_records_gn_cpu_and_ec_mode():
     assert "skia_win_arm64ec = true" in summary
     assert 'extra_cflags = ["/MT", "/arm64EC"]' in summary
     assert 'extra_ldflags = ["/machine:ARM64EC"]' in summary
+    assert 'extra_arflags = ["/machine:ARM64EC"]' in summary
     assert "clang_win" not in summary
 
 

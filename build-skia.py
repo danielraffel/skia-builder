@@ -706,8 +706,9 @@ class SkiaBuildScript:
             gn_args += f'skia_win_arm64ec = {"true" if arch == "arm64ec" else "false"}\n'
             if arch == "arm64ec":
                 # GN's ARM64 target selects the Windows ARM source/toolchain;
-                # this linker flag is what makes the produced archive EC.
+                # linker/archive flags make every produced library EC.
                 gn_args += 'extra_ldflags = ["/machine:ARM64EC"]\n'
+                gn_args += 'extra_arflags = ["/machine:ARM64EC"]\n'
             # Pulp consumes the Windows archives with MSVC.  Keep the
             # producer on the same STL/CRT ABI; the clang-produced ARM64
             # asset otherwise leaves __std_* symbols unresolved at link time
@@ -1276,7 +1277,9 @@ class SkiaBuildScript:
                 'cxx = "cl.exe"',
                 "extra_cflags = [" + ", ".join(f'\"{flag}\"' for flag in msvc_flags) + "]",
                 "skia_win_arm64ec = " + ("true" if arch == "arm64ec" else "false"),
-                *(["extra_ldflags = [\"/machine:ARM64EC\"]"]
+                *( ["extra_ldflags = [\"/machine:ARM64EC\"]"]
+                  if arch == "arm64ec" else []),
+                *( ["extra_arflags = [\"/machine:ARM64EC\"]"]
                   if arch == "arm64ec" else []),
             ]) + "\n"
         # Remove leading whitespace from each line while preserving structure

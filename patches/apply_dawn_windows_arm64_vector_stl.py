@@ -35,17 +35,17 @@ def _patch_cmake_archive_flags(cmake_utils: Path) -> bool:
     return True
 
 
-def _patch_dawn_args(args_gni: Path) -> bool:
-    """Declare the custom GN switch consumed by Dawn's BUILD.gn."""
-    content = args_gni.read_text(encoding="utf-8")
+def _patch_skia_args(skia_gni: Path) -> bool:
+    """Declare the custom GN switch in the scope Dawn's BUILD.gn imports."""
+    content = skia_gni.read_text(encoding="utf-8")
     marker = "  skia_win_arm64ec = false\n"
     if marker in content:
         return False
-    needle = "declare_args() {\n"
+    needle = "declare_args() {\n  skia_android_serial = \"\"\n"
     if needle not in content:
-        raise RuntimeError("Dawn args.gni declare_args anchor not found")
+        raise RuntimeError("Skia root args declare_args anchor not found")
     replacement = needle + "  # Select ARM64EC flags for Dawn's CMake sub-build.\n" + marker
-    args_gni.write_text(content.replace(needle, replacement, 1), encoding="utf-8")
+    skia_gni.write_text(content.replace(needle, replacement, 1), encoding="utf-8")
     return True
 
 
@@ -53,8 +53,8 @@ def apply_patch(skia_dir: Path) -> bool:
     build_gn = skia_dir / "third_party" / "dawn" / "BUILD.gn"
     content = build_gn.read_text(encoding="utf-8")
     cmake_utils = skia_dir / "third_party" / "dawn" / "cmake_utils.py"
-    args_gni = skia_dir / "third_party" / "dawn" / "args.gni"
-    changed = _patch_dawn_args(args_gni)
+    skia_gni = skia_dir / "gn" / "skia.gni"
+    changed = _patch_skia_args(skia_gni)
     changed = _patch_cmake_cpu_map(cmake_utils) or changed
     changed = _patch_cmake_archive_flags(cmake_utils) or changed
     if EC_MARKER in content:

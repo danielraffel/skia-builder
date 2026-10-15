@@ -10,9 +10,10 @@ def test_patch_is_idempotent() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         build_gn = Path(tmp) / "third_party" / "dawn" / "BUILD.gn"
         cmake_utils = Path(tmp) / "third_party" / "dawn" / "cmake_utils.py"
-        args_gni = Path(tmp) / "third_party" / "dawn" / "args.gni"
+        skia_gni = Path(tmp) / "gn" / "skia.gni"
         build_gn.parent.mkdir(parents=True)
-        args_gni.write_text("declare_args() {\n}\n", encoding="utf-8")
+        skia_gni.parent.mkdir(parents=True)
+        skia_gni.write_text("declare_args() {\n  skia_android_serial = \"\"\n}\n", encoding="utf-8")
         build_gn.write_text('''  if (is_clang) {
     args += [ "--is_clang" ]
   }
@@ -30,7 +31,7 @@ def test_patch_is_idempotent() -> None:
 
         assert apply_dawn_windows_arm64_vector_stl.apply_patch(Path(tmp))
         first = build_gn.read_text(encoding="utf-8")
-        assert "skia_win_arm64ec = false" in args_gni.read_text(encoding="utf-8")
+        assert "skia_win_arm64ec = false" in skia_gni.read_text(encoding="utf-8")
         assert "target_cpu == \"arm64\"" in first
         assert "_USE_STD_VECTOR_ALGORITHMS=0" in first
         patched_cmake = cmake_utils.read_text(encoding="utf-8")
@@ -50,7 +51,9 @@ def test_patch_routes_arm64ec_flags() -> None:
   }
   if (is_debug) {
 ''', encoding="utf-8")
-        (dawn / "args.gni").write_text("declare_args() {\n}\n", encoding="utf-8")
+        skia_gni = root / "gn" / "skia.gni"
+        skia_gni.parent.mkdir(parents=True)
+        skia_gni.write_text("declare_args() {\n  skia_android_serial = \"\"\n}\n", encoding="utf-8")
         (dawn / "cmake_utils.py").write_text('''    target_cpu_map = {
       "arm64": "ARM64",
       "x64": "AMD64",
@@ -62,7 +65,7 @@ def test_patch_routes_arm64ec_flags() -> None:
 ''', encoding="utf-8")
         assert apply_dawn_windows_arm64_vector_stl.apply_patch(root)
         patched = (dawn / "BUILD.gn").read_text(encoding="utf-8")
-        assert "skia_win_arm64ec = false" in (dawn / "args.gni").read_text(encoding="utf-8")
+        assert "skia_win_arm64ec = false" in skia_gni.read_text(encoding="utf-8")
         assert "defined(skia_win_arm64ec)" in patched
         assert '"--cxx_flags=/arm64EC"' in patched
         assert '"--ld_flags=/machine:ARM64EC"' in patched

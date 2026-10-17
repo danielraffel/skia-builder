@@ -6,6 +6,7 @@ from pathlib import Path
 
 
 EC_MARKER = '"--cxx_flags=/arm64EC"'
+ARCHIVE_FLAG_MARKER = "      combine_obj_cmd.extend(args.ld_flags)"
 
 
 def _patch_cmake_cpu_map(cmake_utils: Path) -> bool:
@@ -21,11 +22,41 @@ def _patch_cmake_cpu_map(cmake_utils: Path) -> bool:
     return True
 
 
+def _patch_cmake_archive_flags(cmake_utils: Path) -> bool:
+    """Pass Dawn's linker machine flags to the MSVC archive command too."""
+    content = cmake_utils.read_text(encoding="utf-8")
+    if ARCHIVE_FLAG_MARKER in content:
+        return False
+    needle = "    combine_obj_cmd = [\n        linker_exe, \"/LIB\", f\"/OUT:{lib_name}\", f\"@{response_file_name}\"\n    ]\n  else:"
+    replacement = "    combine_obj_cmd = [\n        linker_exe, \"/LIB\", f\"/OUT:{lib_name}\", f\"@{response_file_name}\"\n    ]\n    if args.ld_flags:\n      # lib.exe does not inherit CMake's linker machine mode. Keep the\n      # combined archive in the same architecture as its object files.\n      combine_obj_cmd.extend(args.ld_flags)\n  else:"
+    if needle not in content:
+        raise RuntimeError("Dawn CMake archive command anchor not found")
+    cmake_utils.write_text(content.replace(needle, replacement, 1), encoding="utf-8")
+    return True
+
+
+def _patch_skia_args(skia_gni: Path) -> bool:
+    """Declare the custom GN switch in the scope Dawn's BUILD.gn imports."""
+    content = skia_gni.read_text(encoding="utf-8")
+    marker = "  skia_win_arm64ec = false\n"
+    if marker in content:
+        return False
+    needle = "declare_args() {\n  skia_android_serial = \"\"\n"
+    if needle not in content:
+        raise RuntimeError("Skia root args declare_args anchor not found")
+    replacement = needle + "  # Select ARM64EC flags for Dawn's CMake sub-build.\n" + marker
+    skia_gni.write_text(content.replace(needle, replacement, 1), encoding="utf-8")
+    return True
+
+
 def apply_patch(skia_dir: Path) -> bool:
     build_gn = skia_dir / "third_party" / "dawn" / "BUILD.gn"
     content = build_gn.read_text(encoding="utf-8")
     cmake_utils = skia_dir / "third_party" / "dawn" / "cmake_utils.py"
-    changed = _patch_cmake_cpu_map(cmake_utils)
+    skia_gni = skia_dir / "gn" / "skia.gni"
+    changed = _patch_skia_args(skia_gni)
+    changed = _patch_cmake_cpu_map(cmake_utils) or changed
+    changed = _patch_cmake_archive_flags(cmake_utils) or changed
     if EC_MARKER in content:
         return changed
 

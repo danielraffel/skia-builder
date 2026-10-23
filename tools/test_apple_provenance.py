@@ -20,6 +20,8 @@ def load(name):
     spec = importlib.util.spec_from_file_location(name, ROOT / "tools" / f"{name}.py")
     module = importlib.util.module_from_spec(spec)
     assert spec.loader
+    # dataclasses resolve string annotations through sys.modules.
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 

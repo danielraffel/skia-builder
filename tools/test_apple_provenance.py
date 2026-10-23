@@ -550,10 +550,19 @@ class RebindTests(unittest.TestCase):
         receipt_path.write_bytes(receipt_tool.canonical_bytes(receipt))
         return archive, manifest_path, receipt_path
 
-    def run_rebind(self, archive, manifest, receipt, original=None):
+    def bundle(self, content=b'{"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json"}\n',
+               name=None):
+        digest = apple_archive.sha256_bytes(content)
+        path = self.tmp / "bundles" / (name or "skia-build-mac-universal-gpu-release.provenance-attestation."
+                                               f"sha256-{digest}.sigstore.json")
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(content)
+        return path
+
+    def run_rebind(self, archive, manifest, receipt, original=None, bundle=None):
         return rebind_tool.rebind(self.pinned, archive, manifest, receipt,
                                   {"run_id": 7, "run_attempt": 2}, original or self.ORIGINAL,
-                                  self.tmp / "out")
+                                  self.tmp / "out", bundle or self.bundle())
 
     def test_member_identical_rebuild_rebinds_to_the_published_archive(self):
         archive, manifest_path, receipt_path = self.rebuild()
@@ -580,6 +589,12 @@ class RebindTests(unittest.TestCase):
         self.assertEqual(derived["comparison"]["sha256"],
                          apple_archive.sha256_bytes(written["member-comparison"].read_bytes()))
         self.assertEqual(receipt["measurement"]["original_build_log"]["image_version"], "20260907.0337.1")
+        # The rebuild's own provenance bundle is named, so a consumer can
+        # re-verify the rebuild against build-skia.yml on main.
+        bundle = self.bundle()
+        self.assertEqual(derived["rebuild_bundle"],
+                         {"name": bundle.name, "sha256": apple_archive.sha256_bytes(bundle.read_bytes())})
+        self.assertEqual(receipt["derived_from"], derived)
         for path in written.values():
             self.assertIn(apple_archive.sha256_bytes(path.read_bytes()), path.name)
 
@@ -608,6 +623,15 @@ class RebindTests(unittest.TestCase):
         archive, manifest_path, receipt_path = self.rebuild(objects=symdef(b"\0" * 7 + b"\1"))
         with self.assertRaisesRegex(rebind_tool.RebindError, "not member-identical.*symbol tables differ"):
             self.run_rebind(archive, manifest_path, receipt_path)
+
+    def test_rebuild_bundle_must_be_a_content_addressed_sigstore_bundle(self):
+        archive, manifest_path, receipt_path = self.rebuild()
+        renamed = self.bundle(name="skia-build-mac-universal-gpu-release.provenance-attestation."
+                                   f"sha256-{'0' * 64}.sigstore.json")
+        with self.assertRaisesRegex(rebind_tool.RebindError, "not its content-addressed"):
+            self.run_rebind(archive, manifest_path, receipt_path, bundle=renamed)
+        with self.assertRaisesRegex(rebind_tool.RebindError, "not a Sigstore bundle"):
+            self.run_rebind(archive, manifest_path, receipt_path, bundle=self.bundle(content=b"{}"))
 
     def test_manifest_of_another_archive_is_refused(self):
         archive, _manifest_path, receipt_path = self.rebuild()

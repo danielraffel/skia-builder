@@ -162,6 +162,11 @@ class RebindWorkflowTests(unittest.TestCase):
         self.assertEqual(step["env"]["HEAD_SHA"], "${{ steps.run.outputs.head_sha }}")
         self.assertIn('"rebuild/$stem/$ASSET" rebuild/"$stem"/provenance-assets/*.json', script)
 
+    def test_the_rebuild_bundle_is_recorded(self):
+        script = self.step("Rebind the rebuild's records to the published archive")["run"]
+        self.assertIn('--rebuild-bundle "${bundles[0]}"', script)
+        self.assertIn("rebuild/skia-build-apple-attestation/", script)
+
     def test_only_the_attest_job_holds_an_oidc_grant(self):
         for name, job in self.workflow["jobs"].items():
             granted = (job.get("permissions") or {}).get("id-token") == "write"

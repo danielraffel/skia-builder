@@ -157,9 +157,11 @@ jobs:
             echo "::error::run $RUN_ID has no $ASSET with exactly one legal manifest and one toolchain receipt"
             exit 1
           fi
+          bundles=(rebuild/skia-build-apple-attestation/"$stem".provenance-attestation.sha256-*.sigstore.json)
           python3 tools/rebind_provenance.py \
             --pinned "published/$ASSET" --rebuild-archive "$cell/$ASSET" \
             --rebuild-manifest "${manifests[0]}" --rebuild-receipt "${receipts[0]}" \
+            --rebuild-bundle "${bundles[0]}" \
             --rebuild-repository "$GITHUB_REPOSITORY" --rebuild-run-id "$RUN_ID" \
             --rebuild-run-attempt "$RUN_ATTEMPT" --rebuild-ref "$REBUILD_REF" \
             --original-job "$ORIGINAL_JOB" --original-image-version "$ORIGINAL_IMAGE" \

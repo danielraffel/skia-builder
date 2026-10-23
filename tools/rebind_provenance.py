@@ -19,8 +19,9 @@ them to the published archive:
   copied; per-member and symbol-table digests must equal the rebuild's, and
   slices are keyed by CPU type and subtype, so no slice goes uncompared;
 * both records gain ``derived_from``, naming the rebuild's content-addressed
-  manifest and receipt, the rebuild archive, the comparison report and the
-  run that built it;
+  manifest and receipt, the rebuild archive, the comparison report, the run
+  that built it, and that run's build-provenance bundle, against which a
+  consumer re-verifies the rebuild;
 * the receipt states that its toolchain values were measured on the rebuild's
   runner, and records the values the original build's job log shows, which
   must match.
@@ -126,8 +127,30 @@ def original_build_matches(receipt: dict, original: dict) -> list[str]:
     return problems
 
 
+def rebuild_bundle_record(bundle: Path, stem: str) -> dict:
+    """The rebuild run's build-provenance bundle, as the records name it.
+
+    A consumer re-verifies the rebuild archive, manifest and receipt against
+    this bundle (build-skia.yml on main), so the records name it by its own
+    content-addressed file name and digest.
+    """
+    data = bundle.read_bytes()
+    digest = sha256_bytes(data)
+    expected = f"{stem}.provenance-attestation.sha256-{digest}.sigstore.json"
+    require(bundle.name == expected,
+            f"the rebuild bundle is named {bundle.name!r}, not its content-addressed {expected!r}")
+    try:
+        media_type = json.loads(data).get("mediaType", "")
+    except ValueError:
+        media_type = ""
+    require(str(media_type).startswith("application/vnd.dev.sigstore.bundle"),
+            "the rebuild bundle is not a Sigstore bundle")
+    return {"name": bundle.name, "sha256": digest}
+
+
 def rebind(pinned: Path, probe_archive: Path, probe_manifest: Path, probe_receipt: Path,
-           probe_run: dict, original_build: dict, out_dir: Path) -> dict[str, Path]:
+           probe_run: dict, original_build: dict, out_dir: Path,
+           rebuild_bundle: Path) -> dict[str, Path]:
     report = compare_archive_members.compare(pinned, probe_archive, limit=5)
     require(report["verdict"] in ACCEPTED_VERDICTS,
             f"the rebuild is not member-identical to {pinned.name}: {report['verdict']} "
@@ -147,6 +170,7 @@ def rebind(pinned: Path, probe_archive: Path, probe_manifest: Path, probe_receip
     require(not mismatches, "the rebuild toolchain is not the original build's: " + "; ".join(mismatches))
 
     stem = pinned.name.removesuffix(".zip")
+    bundle_record = rebuild_bundle_record(rebuild_bundle, stem)
     report_bytes = canonical(report)
     report_name = addressed(stem, "member-comparison", report_bytes)
     derived_from = {
@@ -157,6 +181,7 @@ def rebind(pinned: Path, probe_archive: Path, probe_manifest: Path, probe_receip
         "rebuild_manifest": {"name": probe_manifest.name, "sha256": sha256_bytes(manifest_bytes)},
         "rebuild_receipt": {"name": probe_receipt.name, "sha256": sha256_bytes(receipt_bytes)},
         "rebuild_run": probe_run,
+        "rebuild_bundle": bundle_record,
     }
 
     manifest = rebind_manifest(manifest_probe, pinned)
@@ -192,6 +217,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--rebuild-archive", type=Path, required=True)
     parser.add_argument("--rebuild-manifest", type=Path, required=True)
     parser.add_argument("--rebuild-receipt", type=Path, required=True)
+    parser.add_argument("--rebuild-bundle", type=Path, required=True,
+                        help="the rebuild run's build-provenance bundle, as attest-apple published it")
     parser.add_argument("--rebuild-repository", default="danielraffel/skia-builder")
     parser.add_argument("--rebuild-run-id", type=int, required=True)
     parser.add_argument("--rebuild-run-attempt", type=int, required=True)
@@ -211,7 +238,7 @@ def main(argv: list[str] | None = None) -> int:
             {"job": args.original_job, "image_version": args.original_image_version,
              "xcode": args.original_xcode,
              "compiler_identification": args.original_compiler_identification},
-            args.out_dir)
+            args.out_dir, args.rebuild_bundle)
     except (RebindError, OSError, ValueError, KeyError, zipfile.BadZipFile) as error:
         print(f"rebind-provenance: {error}", file=sys.stderr)
         return 1

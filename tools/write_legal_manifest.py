@@ -413,9 +413,33 @@ class BuildGraph:
 
 # ------------------------------------------------------------- manifest ----
 
+DEPS_CHECKOUTS = {"skia": ".", "dawn": "third_party/externals/dawn"}
+
+
+def source_revisions(graph: BuildGraph, expected: dict[str, str]) -> dict[str, object]:
+    """The exact Skia/Dawn commits checked out, against the revisions the lock pinned."""
+    rows: dict[str, object] = {}
+    for name, rel in sorted(DEPS_CHECKOUTS.items()):
+        directory = graph.source_root / rel
+        try:
+            actual = graph.runner(["git", "rev-parse", "HEAD"], directory).strip()
+        except (OSError, subprocess.CalledProcessError):
+            actual = None
+        row = {"checkout": rel, "commit": actual, "expected": expected.get(name)}
+        if actual is None or not re.fullmatch(r"[0-9a-f]{40}", actual):
+            graph.gaps.append({"kind": "source-revision-unknown", "path": f"source:{rel}"})
+        elif expected.get(name) and expected[name] != actual:
+            graph.gaps.append({"kind": "source-revision-mismatch",
+                               "path": f"{name}: built {actual}, lock pinned {expected[name]}"})
+        rows[name] = row
+    return rows
+
+
 def build_manifest(archive: Path, graph: BuildGraph, cell: dict[str, object],
-                   gn: str | None = None) -> dict[str, object]:
+                   gn: str | None = None, expected_revisions: dict[str, str] | None = None
+                   ) -> dict[str, object]:
     graph.index()
+    revisions = source_revisions(graph, expected_revisions or {})
     zip_members: list[dict[str, object]] = []
     static_archives: dict[str, object] = {}
     with zipfile.ZipFile(archive) as handle:
@@ -450,6 +474,7 @@ def build_manifest(archive: Path, graph: BuildGraph, cell: dict[str, object],
         "license_resolution": LICENSE_RESOLUTION,
         "archive": {"name": archive.name, "sha256": sha256_file(archive), "size": archive.stat().st_size},
         "cell": cell,
+        "source_revisions": revisions,
         "repositories": dict(sorted(graph.repositories.items())),
         "zip_members": zip_members,
         "static_archives": static_archives,
@@ -623,6 +648,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="directory whose headers are toolchain inputs (SDK, libc++); "
                              "defaults to the active developer dir, the Command Line Tools and /usr")
     parser.add_argument("--gn", help="GN binary; defaults to <source-root>/bin/gn")
+    parser.add_argument("--expect-skia-revision", default="",
+                        help="Skia commit the release lock pinned; a different checkout is a gap")
+    parser.add_argument("--expect-dawn-revision", default="",
+                        help="Dawn commit the release lock pinned; a different checkout is a gap")
     parser.add_argument("--platform", default="")
     parser.add_argument("--variant", default="")
     parser.add_argument("--configuration", default="")
@@ -655,7 +684,9 @@ def main(argv: list[str] | None = None) -> int:
                        toolchain_roots=args.toolchain_root or default_toolchain_roots())
     cell = {"platform": args.platform, "variant": args.variant,
             "configuration": args.configuration, "architectures": sorted(out_dirs)}
-    manifest = build_manifest(args.archive, graph, cell, gn)
+    expected = {name: value for name, value in (("skia", args.expect_skia_revision),
+                                                ("dawn", args.expect_dawn_revision)) if value}
+    manifest = build_manifest(args.archive, graph, cell, gn, expected)
     data = canonical_bytes(manifest)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(data)

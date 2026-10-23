@@ -172,6 +172,16 @@ class LegalManifestTests(unittest.TestCase):
         (src / "third_party" / "externals" / "zlib" / "inflate.c").write_text(
             "int inflate_it(void) { return 2; }\n")
         self.src = src
+        (src / "third_party" / "externals" / "dawn").mkdir()
+        (src / "third_party" / "externals" / "dawn" / "LICENSE").write_text("Dawn BSD\n")
+        self.commits = {}
+        for name, repo in (("dawn", src / "third_party" / "externals" / "dawn"), ("skia", src)):
+            git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t"]
+            subprocess.run(git[:3] + ["init", "-q"], check=True)
+            subprocess.run(git + ["add", "-A"], check=True)
+            subprocess.run(git + ["commit", "-q", "-m", name], check=True)
+            self.commits[name] = subprocess.run(git[:3] + ["rev-parse", "HEAD"], check=True,
+                                                capture_output=True, text=True).stdout.strip()
         self.out = self.tmp / "tmp" / "skia" / "mac_Release_arm64_gpu"
         self.out.mkdir(parents=True)
         (self.out / "build.ninja").write_text(
@@ -195,11 +205,23 @@ class LegalManifestTests(unittest.TestCase):
         write_zip(archive, entries)
         return archive
 
-    def manifest(self, archive):
+    def manifest(self, archive, expected=None):
         graph = manifest_tool.BuildGraph(self.src, {"arm64": self.out}, "ninja",
                                          builder_root=self.builder,
                                          toolchain_roots=manifest_tool.default_toolchain_roots())
-        return manifest_tool.build_manifest(archive, graph, {"platform": "mac"}, gn=None)
+        return manifest_tool.build_manifest(archive, graph, {"platform": "mac"}, gn=None,
+                                            expected_revisions=expected)
+
+    def test_records_the_exact_skia_and_dawn_checkouts(self):
+        manifest = self.manifest(self.package(), expected=dict(self.commits))
+        self.assertEqual(manifest["gaps"], [])
+        self.assertEqual({name: row["commit"] for name, row in manifest["source_revisions"].items()},
+                         self.commits)
+
+    def test_checkout_other_than_the_pinned_revision_is_a_gap(self):
+        manifest = self.manifest(self.package(), expected={"skia": "0" * 40, "dawn": self.commits["dawn"]})
+        self.assertEqual([gap["kind"] for gap in manifest["gaps"]], ["source-revision-mismatch"])
+        self.assertFalse(manifest["exhaustive"])
 
     def test_exhaustive_inventory_resolves_every_member_to_a_license(self):
         archive = self.package()

@@ -178,6 +178,7 @@ jobs:
     env:
       SKIA_BRANCH: ${{ needs.resolve-skia.outputs.tag }}
       SKIA_REVISION: ${{ needs.resolve-skia.outputs.skia }}
+      DAWN_REVISION: ${{ needs.resolve-skia.outputs.dawn }}
     steps:
       - name: Check if platform should build
         id: check
@@ -512,6 +513,7 @@ jobs:
           python3 tools/write_legal_manifest.py provenance/legal-manifest.json \
             --archive "$ARCHIVE" --source-root build/src/skia "${out_args[@]}" \
             --platform "$PLATFORM" --variant "$VARIANT" --configuration "$CONFIG" \
+            --expect-skia-revision "$SKIA_REVISION" --expect-dawn-revision "$DAWN_REVISION" \
             --content-addressed-dir provenance-assets || status=1
           echo "provenance_status=$status" >> "$GITHUB_ENV"
           ls -la provenance provenance-assets

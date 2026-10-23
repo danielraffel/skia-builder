@@ -180,6 +180,12 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.select-matrix.outputs.matrix) }}
     runs-on: ${{ startsWith(matrix.os, 'macos') && (inputs.apple_runner || 'macos-15') || matrix.os }}
+    # id-token and attestations sign a build-provenance attestation for the
+    # Apple archive and its provenance records; neither can write a release.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     env:
       SKIA_BRANCH: ${{ needs.resolve-skia.outputs.tag }}
       SKIA_REVISION: ${{ needs.resolve-skia.outputs.skia }}
@@ -573,6 +579,39 @@ jobs:
           python3 tools/write_apple_toolchain_receipt.py "${receipts[0]}" --archive "$ARCHIVE" --check
           python3 tools/write_legal_manifest.py "${manifests[0]}" --archive "$ARCHIVE" --check
 
+      # The release asset digest proves the bytes did not change after upload;
+      # this attestation proves which workflow, ref and commit produced them.
+      # One attestation covers the archive, the receipt and the manifest.
+      - name: Attest Apple archive and provenance records
+        id: attest
+        if: steps.check.outputs.should_build == 'true' && runner.os == 'macOS' && !inputs.test_mode
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: |
+            ${{ steps.archive.outputs.name }}.zip
+            provenance-assets/*.json
+
+      # The Sigstore bundle lets a consumer verify offline, without a token.
+      # It is named after its own sha256 like the records it covers.
+      - name: Keep the attestation bundle
+        if: steps.check.outputs.should_build == 'true' && runner.os == 'macOS' && !inputs.test_mode
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+          NAME: ${{ steps.archive.outputs.name }}
+        run: |
+          set -euo pipefail
+          mkdir -p provenance-attestation
+          digest="$(shasum -a 256 "$BUNDLE" | cut -d' ' -f1)"
+          cp "$BUNDLE" "provenance-attestation/${NAME}.provenance-attestation.sha256-${digest}.sigstore.json"
+          ls -la provenance-attestation
+
+      - name: Upload attestation bundle (Apple)
+        if: steps.check.outputs.should_build == 'true' && runner.os == 'macOS' && !inputs.test_mode
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.archive.outputs.name }}-attestation
+          path: provenance-attestation/*.sigstore.json
+
   # Portable Linux x64 Skia+Dawn, built in an Ubuntu 22.04 container so the shipped
   # libskia.a / libdawn_combined.a carry a glibc 2.34 floor (loadable on Ubuntu 22.04+,
   # Debian 12+, RHEL/Rocky 9+, Fedora 35+). The default ubuntu-latest matrix cell leaked
@@ -859,7 +898,7 @@ jobs:
             replace=(--allow-replace "$REPLACE_ASSET" --reason "$REPLACE_REASON")
           fi
           shopt -s nullglob
-          provenance=(./skia-build-*/provenance-assets/*.json)
+          provenance=(./skia-build-*/provenance-assets/*.json ./skia-build-*-attestation/*.sigstore.json)
           python3 src/tools/release_asset_guard.py --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" \
             publish ./skia-build-*/*.zip ./Skia.xcframework/Skia.xcframework.zip \
             ./skia-release-lock/skia-release-lock.json ${provenance[@]+"${provenance[@]}"} \
@@ -912,6 +951,7 @@ jobs:
             ./Skia.xcframework/Skia.xcframework.zip
             ./skia-release-lock/skia-release-lock.json
             ./skia-build-*/provenance-assets/*.json
+            ./skia-build-*-attestation/*.sigstore.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

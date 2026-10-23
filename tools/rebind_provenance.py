@@ -14,10 +14,10 @@ them to the published archive:
 * it refuses unless the comparison verdict is ``identical`` or
   ``metadata-only``;
 * every digest that names the published archive (the archive, each zip
-  member, each static-archive slice, member and symbol table, and the
-  receipt's per-member LC_BUILD_VERSION census) is recomputed from the
-  published bytes, never copied, and the per-member digests are required to
-  equal the rebuild's;
+  member, each static-archive slice, and the receipt's per-member
+  LC_BUILD_VERSION census) is recomputed from the published bytes, never
+  copied; per-member and symbol-table digests must equal the rebuild's, and
+  slices are keyed by CPU type and subtype, so no slice goes uncompared;
 * both records gain ``derived_from``, naming the rebuild's content-addressed
   manifest and receipt, the rebuild archive, the comparison report and the
   run that built it;
@@ -98,8 +98,9 @@ def rebind_manifest(probe: dict, pinned: Path) -> dict:
                 for member, member_row in zip(parsed.members, slice_row["members"]):
                     require(member.name == member_row["name"] and member.sha256 == member_row["sha256"],
                             f"{name}[{piece.arch}] {member.name}: content differs from the rebuild")
+                require([table.sha256 for table in parsed.symbol_tables] == slice_row["symbol_tables"],
+                        f"{name}[{piece.arch}]: symbol table differs from the rebuild")
                 slice_row["sha256"] = sha256_bytes(piece.data)
-                slice_row["symbol_tables"] = [table.sha256 for table in parsed.symbol_tables]
     return manifest
 
 

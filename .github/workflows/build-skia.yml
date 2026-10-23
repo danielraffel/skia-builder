@@ -180,12 +180,6 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.select-matrix.outputs.matrix) }}
     runs-on: ${{ startsWith(matrix.os, 'macos') && (inputs.apple_runner || 'macos-15') || matrix.os }}
-    # id-token and attestations sign a build-provenance attestation for the
-    # Apple archive and its provenance records; neither can write a release.
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
     env:
       SKIA_BRANCH: ${{ needs.resolve-skia.outputs.tag }}
       SKIA_REVISION: ${{ needs.resolve-skia.outputs.skia }}
@@ -579,38 +573,74 @@ jobs:
           python3 tools/write_apple_toolchain_receipt.py "${receipts[0]}" --archive "$ARCHIVE" --check
           python3 tools/write_legal_manifest.py "${manifests[0]}" --archive "$ARCHIVE" --check
 
-      # The release asset digest proves the bytes did not change after upload;
-      # this attestation proves which workflow, ref and commit produced them.
-      # One attestation covers the archive, the receipt and the manifest.
-      - name: Attest Apple archive and provenance records
-        id: attest
-        if: steps.check.outputs.should_build == 'true' && runner.os == 'macOS' && !inputs.test_mode
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
-        with:
-          subject-path: |
-            ${{ steps.archive.outputs.name }}.zip
-            provenance-assets/*.json
 
-      # The Sigstore bundle lets a consumer verify offline, without a token.
-      # It is named after its own sha256 like the records it covers.
-      - name: Keep the attestation bundle
-        if: steps.check.outputs.should_build == 'true' && runner.os == 'macOS' && !inputs.test_mode
-        env:
-          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
-          NAME: ${{ steps.archive.outputs.name }}
+  # The build jobs run Skia's DEPS-fetched third-party code, so none of them
+  # holds an OIDC grant. This job runs no third-party code: it downloads the
+  # Apple cells' outputs, which each build already proved with --check, and
+  # signs one build-provenance attestation over every archive, receipt and
+  # manifest, so a consumer can verify which workflow, ref and commit
+  # produced them. The release asset digest alone proves only that the bytes
+  # did not change after upload.
+  attest-apple:
+    # Runs in test mode too (and finds nothing to attest), so the release job
+    # that needs it is never skipped by it.
+    needs: build-skia
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download Apple cell outputs
+        uses: actions/download-artifact@v7
+        with:
+          pattern: skia-build-*-release
+          path: cells
+      - name: List the attested subjects
+        id: subjects
         run: |
           set -euo pipefail
-          mkdir -p provenance-attestation
-          digest="$(shasum -a 256 "$BUNDLE" | cut -d' ' -f1)"
-          cp "$BUNDLE" "provenance-attestation/${NAME}.provenance-attestation.sha256-${digest}.sigstore.json"
-          ls -la provenance-attestation
-
-      - name: Upload attestation bundle (Apple)
-        if: steps.check.outputs.should_build == 'true' && runner.os == 'macOS' && !inputs.test_mode
+          : > subjects.sha256
+          for cell in cells/*/; do
+            [ -d "$cell/provenance-assets" ] || continue
+            name="$(basename "$cell")"
+            (cd "$cell" && sha256sum "$name.zip" provenance-assets/*.json) | \
+              sed -E 's#  (provenance-assets/)?#  #' >> subjects.sha256
+            echo "$name" >> cells.txt
+          done
+          cat subjects.sha256
+          if [ ! -s subjects.sha256 ]; then
+            echo "no Apple cell produced provenance records" >> "$GITHUB_STEP_SUMMARY"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Attest Apple archives and provenance records
+        id: attest
+        if: steps.subjects.outputs.present == 'true'
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-checksums: subjects.sha256
+      # The Sigstore bundle lets a consumer verify offline. Each Apple cell
+      # gets a copy named after its archive and the bundle's own sha256.
+      - name: Keep the attestation bundle per cell
+        if: steps.subjects.outputs.present == 'true'
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          mkdir -p attestation
+          digest="$(sha256sum "$BUNDLE" | cut -d' ' -f1)"
+          while read -r name; do
+            cp "$BUNDLE" "attestation/${name}.provenance-attestation.sha256-${digest}.sigstore.json"
+          done < cells.txt
+          ls -la attestation
+      - name: Upload attestation bundles
+        if: steps.subjects.outputs.present == 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ steps.archive.outputs.name }}-attestation
-          path: provenance-attestation/*.sigstore.json
+          name: skia-build-apple-attestation
+          path: attestation/*.sigstore.json
 
   # Portable Linux x64 Skia+Dawn, built in an Ubuntu 22.04 container so the shipped
   # libskia.a / libdawn_combined.a carry a glibc 2.34 floor (loadable on Ubuntu 22.04+,
@@ -862,7 +892,7 @@ jobs:
 
   create-release:
     if: ${{ !inputs.skip_release && inputs.platforms == 'all' && github.ref == 'refs/heads/main' }}
-    needs: [resolve-skia, build-skia, create-xcframework, portable-linux-x64]
+    needs: [resolve-skia, build-skia, create-xcframework, portable-linux-x64, attest-apple]
     runs-on: ubuntu-latest
     permissions:
       contents: write

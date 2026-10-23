@@ -1,0 +1,172 @@
+name: Rebind provenance
+run-name: Rebind provenance for ${{ inputs.release_tag }} ${{ inputs.asset }}
+
+# A release published before the builder wrote provenance can still get a
+# legal manifest and toolchain receipt: rebuild it on a branch with the same
+# source and toolchain (build-skia.yml with release_tag and apple_xcode), then
+# dispatch this workflow from main. It rebinds the rebuild's records to the
+# published archive with tools/rebind_provenance.py, which refuses unless the
+# rebuild is member-identical, and attests the rebound records. Run it while
+# the rebuild run's artifacts still exist (90 days).
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release holding the published archive (for example chrome/m157)'
+        required: true
+        type: string
+      asset:
+        description: 'Published archive (for example skia-build-mac-universal-gpu-release.zip)'
+        required: true
+        type: string
+      rebuild_run_id:
+        description: 'build-skia.yml run that rebuilt the archive'
+        required: true
+        type: string
+      rebuild_run_attempt:
+        description: 'Attempt of that run whose artifacts are used'
+        required: true
+        type: string
+      rebuild_ref:
+        description: 'Ref the rebuild ran on (for example refs/heads/probe/...)'
+        required: true
+        type: string
+      original_job:
+        description: 'Job that built the published archive'
+        required: true
+        type: string
+      original_image_version:
+        description: 'Runner image version in that job log (for example 20260907.0337.1)'
+        required: true
+        type: string
+      original_xcode:
+        description: 'Xcode in that job log (for example Xcode_16.4)'
+        required: true
+        type: string
+      original_compiler_identification:
+        description: 'Compiler identification in that job log'
+        required: true
+        type: string
+      publish:
+        description: 'Add the rebound records and bundle to the release as new assets (main only)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  rebind:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Download the published archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          ASSET: ${{ inputs.asset }}
+        run: |
+          set -euo pipefail
+          mkdir -p published
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ASSET" --dir published
+      - name: Download the rebuild
+        uses: actions/download-artifact@v7
+        with:
+          run-id: ${{ inputs.rebuild_run_id }}
+          github-token: ${{ github.token }}
+          path: rebuild
+      - name: Rebind the rebuild's records to the published archive
+        env:
+          ASSET: ${{ inputs.asset }}
+          RUN_ID: ${{ inputs.rebuild_run_id }}
+          RUN_ATTEMPT: ${{ inputs.rebuild_run_attempt }}
+          REBUILD_REF: ${{ inputs.rebuild_ref }}
+          ORIGINAL_JOB: ${{ inputs.original_job }}
+          ORIGINAL_IMAGE: ${{ inputs.original_image_version }}
+          ORIGINAL_XCODE: ${{ inputs.original_xcode }}
+          ORIGINAL_COMPILER: ${{ inputs.original_compiler_identification }}
+        run: |
+          set -euo pipefail
+          stem="${ASSET%.zip}"
+          cell="rebuild/$stem"
+          shopt -s nullglob
+          manifests=("$cell"/provenance-assets/*.legal-manifest.sha256-*.json)
+          receipts=("$cell"/provenance-assets/*.apple-toolchain.sha256-*.json)
+          if [ ! -f "$cell/$ASSET" ] || [ ${#manifests[@]} -ne 1 ] || [ ${#receipts[@]} -ne 1 ]; then
+            echo "::error::run $RUN_ID has no $ASSET with exactly one legal manifest and one toolchain receipt"
+            exit 1
+          fi
+          python3 tools/rebind_provenance.py \
+            --pinned "published/$ASSET" --rebuild-archive "$cell/$ASSET" \
+            --rebuild-manifest "${manifests[0]}" --rebuild-receipt "${receipts[0]}" \
+            --rebuild-repository "$GITHUB_REPOSITORY" --rebuild-run-id "$RUN_ID" \
+            --rebuild-run-attempt "$RUN_ATTEMPT" --rebuild-ref "$REBUILD_REF" \
+            --original-job "$ORIGINAL_JOB" --original-image-version "$ORIGINAL_IMAGE" \
+            --original-xcode "$ORIGINAL_XCODE" --original-compiler-identification "$ORIGINAL_COMPILER" \
+            --out-dir rebound
+          python3 tools/write_legal_manifest.py rebound/*.legal-manifest.sha256-*.json \
+            --archive "published/$ASSET" --check
+          python3 tools/write_apple_toolchain_receipt.py rebound/*.apple-toolchain.sha256-*.json \
+            --archive "published/$ASSET" --check
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rebound-provenance
+          path: rebound/*.json
+
+  # Holds the OIDC grant; runs no third-party code and no build.
+  attest:
+    needs: rebind
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: rebound-provenance
+          path: rebound
+      - name: Attest the rebound records
+        id: attest
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: rebound/*.json
+      - name: Keep the attestation bundle
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+          ASSET: ${{ inputs.asset }}
+        run: |
+          set -euo pipefail
+          digest="$(sha256sum "$BUNDLE" | cut -d' ' -f1)"
+          cp "$BUNDLE" "rebound/${ASSET%.zip}.provenance-attestation.sha256-${digest}.sigstore.json"
+          ls -la rebound
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rebound-provenance-attested
+          path: rebound/*.json
+
+  publish:
+    needs: attest
+    if: ${{ inputs.publish && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          name: rebound-provenance-attested
+          path: rebound
+      # Content-addressed names: these can only ever be new assets.
+      - name: Add the rebound records to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          python3 tools/release_asset_guard.py --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" \
+            publish rebound/*.json

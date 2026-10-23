@@ -79,8 +79,11 @@ def differing_sections(left: bytes, right: bytes) -> list[str]:
 
 
 def compare_static_archive(left: bytes, right: bytes, limit: int) -> dict[str, object]:
-    slices_a = {piece.arch: piece.data for piece in apple_archive.slices(left)}
-    slices_b = {piece.arch: piece.data for piece in apple_archive.slices(right)}
+    try:
+        slices_a = {piece.arch: piece.data for piece in apple_archive.slices(left)}
+        slices_b = {piece.arch: piece.data for piece in apple_archive.slices(right)}
+    except apple_archive.ArchiveFormatError as error:
+        return {"error": str(error), "verdict": CODE_DIFFERS, "slices": {}}
     report: dict[str, object] = {"architectures": {"reference": sorted(slices_a), "candidate": sorted(slices_b)}}
     code_differs = sorted(slices_a) != sorted(slices_b)
     per_arch = {}
@@ -108,7 +111,11 @@ def compare_static_archive(left: bytes, right: bytes, limit: int) -> dict[str, o
         only_a = sorted(f"{name}#{index}" for name, index in set(keyed_a) - set(keyed_b))
         only_b = sorted(f"{name}#{index}" for name, index in set(keyed_b) - set(keyed_a))
         differing_count = sum(1 for key in set(keyed_a) & set(keyed_b) if keyed_a[key].data != keyed_b[key].data)
-        if differing_count or only_a or only_b:
+        # The symbol table is how the linker finds members: a different table
+        # is a content difference, not container metadata.
+        symbol_tables_identical = ([t.data for t in arch_a.symbol_tables]
+                                   == [t.data for t in arch_b.symbol_tables])
+        if differing_count or only_a or only_b or not symbol_tables_identical:
             code_differs = True
         per_arch[arch] = {
             "members": {"reference": len(arch_a.members), "candidate": len(arch_b.members)},
@@ -117,7 +124,7 @@ def compare_static_archive(left: bytes, right: bytes, limit: int) -> dict[str, o
             "only_in_reference": only_a[:limit],
             "only_in_candidate": only_b[:limit],
             "header_only_differences": dict(header_fields),
-            "symbol_table_identical": [t.data for t in arch_a.symbol_tables] == [t.data for t in arch_b.symbol_tables],
+            "symbol_table_identical": symbol_tables_identical,
             "differing_sections": dict(section_counts.most_common()),
             "examples": differing,
         }
@@ -186,6 +193,15 @@ def causes(report: dict[str, object]) -> list[str]:
                 ref, cand = example.get("reference") or {}, example.get("candidate") or {}
                 if ref.get("sdk") != cand.get("sdk") or ref.get("minos") != cand.get("minos"):
                     sdks.add((ref.get("sdk"), cand.get("sdk")))
+    tables = [name for name, row in report["static_archives"].items()
+              for piece in row.get("slices", {}).values() if not piece["symbol_table_identical"]]
+    if tables:
+        found.append(f"static-archive symbol tables differ: {sorted(set(tables))}")
+    slice_sets = [name for name, row in report["static_archives"].items()
+                  if row.get("error") or (row.get("architectures") and
+                                          row["architectures"]["reference"] != row["architectures"]["candidate"])]
+    if slice_sets:
+        found.append(f"architecture slices differ or are malformed: {slice_sets}")
     if headers.get("date"):
         found.append("static-archive member dates differ (ar/libtool record object mtimes; ZERO_AR_DATE is unset)")
     if headers.get("uid") or headers.get("gid"):

@@ -86,11 +86,19 @@ class Archive:
     symbol_tables: list[Member] = field(default_factory=list)
 
 
+# Subtypes that keep the plain architecture name; any other subtype gets a
+# distinct name, so two slices of one CPU type can never share a key.
+PLAIN_SUBTYPES = {"x86_64": 3, "arm64": 0, "i386": 3, "arm": 0}
+NAMED_SUBTYPES = {("x86_64", 8): "x86_64h", ("arm64", 2): "arm64e", ("arm64", 1): "arm64v8"}
+
+
 def arch_name(cputype: int, cpusubtype: int) -> str:
+    """A name unique to (cputype, cpusubtype), ignoring capability bits."""
     name = CPU_NAMES.get(cputype, f"cpu-{cputype:#x}")
-    if name == "arm64" and (cpusubtype & 0x00FFFFFF) == 2:
-        return "arm64e"
-    return name
+    subtype = cpusubtype & 0x00FFFFFF
+    if name in PLAIN_SUBTYPES and subtype == PLAIN_SUBTYPES[name]:
+        return name
+    return NAMED_SUBTYPES.get((name, subtype), f"{name}-subtype{subtype}")
 
 
 def slices(data: bytes) -> list[Slice]:
@@ -115,8 +123,10 @@ def slices(data: bytes) -> list[Slice]:
                         offset += 32
                     if start + size > len(data):
                         raise ArchiveFormatError("fat slice extends past end of file")
-                    result.append(Slice(arch_name(cputype & 0xFFFFFFFF, subtype),
-                                        data[start:start + size]))
+                    name = arch_name(cputype & 0xFFFFFFFF, subtype)
+                    if any(piece.arch == name for piece in result):
+                        raise ArchiveFormatError(f"fat file has more than one {name} slice")
+                    result.append(Slice(name, data[start:start + size]))
                 return result
     return [Slice(thin_arch(data), data)]
 

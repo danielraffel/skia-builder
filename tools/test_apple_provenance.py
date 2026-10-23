@@ -50,7 +50,8 @@ def macho(text: bytes, sdk=(15, 5), minos=(13, 0), cputype=0x0100000C, data: byt
         payload += content
     build = struct.pack("<IIIIII", 0x32, build_size, 1, (minos[0] << 16) | (minos[1] << 8),
                         (sdk[0] << 16) | (sdk[1] << 8), 0)
-    head = struct.pack("<IiIIIIII", 0xFEEDFACF, cputype, 0, 1, 2, seg_size + build_size, 0, 0)
+    subtype = 3 if cputype == 0x01000007 else 0  # CPU_SUBTYPE_X86_64_ALL / ARM64_ALL
+    head = struct.pack("<IiIIIIII", 0xFEEDFACF, cputype, subtype, 1, 2, seg_size + build_size, 0, 0)
     return head + seg + build + payload
 
 
@@ -85,11 +86,14 @@ def gnu_ar(members) -> bytes:
 
 
 def fat(*slices) -> bytes:
+    """A fat file; each slice is (cputype, data) or (cputype, cpusubtype, data)."""
     header = struct.pack(">II", 0xCAFEBABE, len(slices))
     offset = 4096
     table, body = b"", b""
-    for cputype, data in slices:
-        table += struct.pack(">iiIII", cputype, 0, offset + len(body), len(data), 12)
+    for row in slices:
+        cputype, data = row[0], row[-1]
+        subtype = row[1] if len(row) == 3 else (3 if cputype == 0x01000007 else 0)
+        table += struct.pack(">iiIII", cputype, subtype, offset + len(body), len(data), 12)
         body += data + b"\0" * ((-len(data)) % 4096)
     return (header + table).ljust(offset, b"\0") + body
 
@@ -431,6 +435,43 @@ class CompareArchiveTests(unittest.TestCase):
         self.assertIn("__TEXT,__text", piece["examples"][0]["sections"])
         self.assertTrue(any("different SDKs" in cause for cause in report["causes"]))
 
+    def fat_zip(self, name, x86_symdef=b"\0" * 8, extra_slice=None):
+        x86 = bsd_ar([("__.SYMDEF SORTED", x86_symdef), ("x.o", macho(b"x86", cputype=0x01000007))])
+        pieces = [(0x0100000C, bsd_ar([("a.o", macho(b"arm"))])), (0x01000007, x86)]
+        if extra_slice is not None:
+            pieces.insert(0, extra_slice)
+        path = self.tmp / name
+        write_zip(path, [("build/mac-gpu/lib/Release/libskia.a", fat(*pieces))])
+        return path
+
+    def test_symbol_table_difference_is_a_content_difference(self):
+        # Reviewer mutation: one byte flipped inside the x86_64 __.SYMDEF body.
+        a = self.fat_zip("a.zip")
+        b = self.fat_zip("b.zip", x86_symdef=b"\0" * 7 + b"\1")
+        report = compare_tool.compare(a, b)
+        self.assertEqual(report["verdict"], compare_tool.CODE_DIFFERS)
+        self.assertTrue(any("symbol tables differ" in cause for cause in report["causes"]))
+
+    def test_extra_slice_of_the_same_cpu_type_is_a_content_difference(self):
+        # Reviewer mutation: an extra x86_64 slice (cpusubtype 4) carrying a
+        # flipped object, prepended to the fat file.
+        a = self.fat_zip("a.zip")
+        extra = (0x01000007, 4, bsd_ar([("x.o", macho(b"X86", cputype=0x01000007))]))
+        b = self.fat_zip("b.zip", extra_slice=extra)
+        report = compare_tool.compare(a, b)
+        self.assertEqual(report["verdict"], compare_tool.CODE_DIFFERS)
+        row = report["static_archives"]["build/mac-gpu/lib/Release/libskia.a"]
+        self.assertEqual(row["architectures"]["candidate"], ["arm64", "x86_64", "x86_64-subtype4"])
+
+    def test_duplicate_slice_is_refused(self):
+        a = self.fat_zip("a.zip")
+        duplicate = (0x01000007, 3, bsd_ar([("x.o", macho(b"x86", cputype=0x01000007))]))
+        b = self.fat_zip("b.zip", extra_slice=duplicate)
+        with self.assertRaisesRegex(apple_archive.ArchiveFormatError, "more than one x86_64 slice"):
+            with zipfile.ZipFile(b) as handle:
+                apple_archive.slices(handle.read("build/mac-gpu/lib/Release/libskia.a"))
+        self.assertEqual(compare_tool.compare(a, b)["verdict"], compare_tool.CODE_DIFFERS)
+
     def test_data_only_difference_is_reported_as_such(self):
         a = self.zip_with("a.zip", [("x.o", macho(b"code", data=b"/Users/runner/a"))])
         b = self.zip_with("b.zip", [("x.o", macho(b"code", data=b"/Users/runner/b"))])
@@ -558,6 +599,15 @@ class RebindTests(unittest.TestCase):
         with self.assertRaisesRegex(rebind_tool.RebindError, "not the original"):
             self.run_rebind(archive, manifest_path, receipt_path,
                             original=dict(self.ORIGINAL, xcode="Xcode_26.3"))
+
+    def test_rebuild_with_a_different_symbol_table_is_refused(self):
+        def symdef(body):
+            return [("__.SYMDEF SORTED", body), ("a.o", macho(b"code")), ("a.o", macho(b"same-name"))]
+        self.pinned = self.archive("published", ar_date=1, zip_date=(2026, 8, 18, 4, 0, 0),
+                                   objects=symdef(b"\0" * 8))
+        archive, manifest_path, receipt_path = self.rebuild(objects=symdef(b"\0" * 7 + b"\1"))
+        with self.assertRaisesRegex(rebind_tool.RebindError, "not member-identical.*symbol tables differ"):
+            self.run_rebind(archive, manifest_path, receipt_path)
 
     def test_manifest_of_another_archive_is_refused(self):
         archive, _manifest_path, receipt_path = self.rebuild()

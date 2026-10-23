@@ -39,6 +39,11 @@ on:
         required: false
         type: string
         default: ''
+      apple_xcode:
+        description: 'Xcode version for Apple builds (for example 16.4); empty keeps the image default. Refuses to build if the image does not ship it.'
+        required: false
+        type: string
+        default: ''
       apple_runner:
         description: 'GitHub-hosted macOS runner label for Apple builds'
         required: false
@@ -371,6 +376,23 @@ jobs:
           restore-keys: |
             ccache-${{ runner.os }}-${{ steps.cache-key.outputs.arch }}-${{ matrix.platform }}-${{ matrix.variant }}-${{ env.SKIA_BRANCH }}-
             ccache-${{ runner.os }}-${{ steps.cache-key.outputs.arch }}-${{ matrix.platform }}-${{ matrix.variant }}-
+
+      # Reproducing a published archive needs the Xcode it was built with,
+      # not whatever the image currently defaults to.
+      - name: Select Xcode (Apple)
+        if: steps.check.outputs.should_build == 'true' && runner.os == 'macOS' && inputs.apple_xcode != ''
+        env:
+          APPLE_XCODE: ${{ inputs.apple_xcode }}
+        run: |
+          set -euo pipefail
+          developer="/Applications/Xcode_${APPLE_XCODE}.app/Contents/Developer"
+          if [ ! -d "$developer" ]; then
+            echo "::error::Xcode $APPLE_XCODE is not installed on image ${ImageOS:-?} ${ImageVersion:-?}; available: $(printf '%s ' /Applications/Xcode_*.app)"
+            exit 1
+          fi
+          echo "DEVELOPER_DIR=$developer" >> "$GITHUB_ENV"
+          DEVELOPER_DIR="$developer" xcodebuild -version
+          DEVELOPER_DIR="$developer" xcrun clang --version
 
       # The Apple toolchain receipt reports this build's ccache hits and
       # misses, not the restored cache's history.

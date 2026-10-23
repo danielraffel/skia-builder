@@ -30,6 +30,7 @@ apple_archive = load("apple_archive")
 manifest_tool = load("write_legal_manifest")
 receipt_tool = load("write_apple_toolchain_receipt")
 compare_tool = load("compare_archive_members")
+rebind_tool = load("rebind_provenance")
 
 
 # ------------------------------------------------------------ fixtures ----
@@ -437,6 +438,133 @@ class CompareArchiveTests(unittest.TestCase):
         piece = report["static_archives"]["build/mac-gpu/lib/Release/libskia.a"]["slices"]["arm64"]
         self.assertEqual(piece["examples"][0]["sections"], ["__DATA,__const"])
         self.assertTrue(any("only data sections differ" in cause for cause in report["causes"]))
+
+
+# ------------------------------------------------------------- rebind ----
+
+def minimal_manifest(archive: pathlib.Path) -> dict:
+    """An exhaustive manifest for a fixture archive, in the writer's shape."""
+    license_text = "BSD\n"
+    licenses = {"source:LICENSE": {"sha256": apple_archive.sha256_bytes(license_text.encode()),
+                                   "text": license_text}}
+    zip_rows, static = [], {}
+    with zipfile.ZipFile(archive) as handle:
+        for info in sorted(handle.infolist(), key=lambda item: item.filename):
+            data = handle.read(info)
+            row = {"name": info.filename, "sha256": apple_archive.sha256_bytes(data), "size": len(data)}
+            if info.filename.endswith(".a"):
+                row["kind"] = "static-archive"
+                slices = {}
+                for piece in apple_archive.slices(data):
+                    parsed = apple_archive.parse_archive(piece.data)
+                    slices[piece.arch] = {
+                        "sha256": apple_archive.sha256_bytes(piece.data),
+                        "members": [{"name": m.name, "sha256": m.sha256, "objects": ["o"],
+                                     "licenses": ["source:LICENSE"]} for m in parsed.members],
+                        "symbol_tables": [t.sha256 for t in parsed.symbol_tables]}
+                static[info.filename] = {"slices": slices, "licenses": ["source:LICENSE"]}
+            else:
+                row.update(kind="packaged-file", origin="source:a.h", licenses=["source:LICENSE"])
+            zip_rows.append(row)
+    return {"schema": manifest_tool.SCHEMA, "license_resolution": manifest_tool.LICENSE_RESOLUTION,
+            "archive": {"name": archive.name, "sha256": compare_tool.sha256_file(archive)},
+            "zip_members": zip_rows, "static_archives": static,
+            "files": {"source:a.h": {"sha256": "0" * 64, "licenses": ["source:LICENSE"]}},
+            "licenses": licenses, "gaps": [], "exhaustive": True}
+
+
+class RebindTests(unittest.TestCase):
+    ORIGINAL = {"job": 1, "image_version": "20260907.0337.1", "xcode": "Xcode_16.4",
+                "compiler_identification": "AppleClang 17.0.0.17000013"}
+
+    def setUp(self):
+        self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="rebind-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.pinned = self.archive("published", ar_date=1, zip_date=(2026, 8, 18, 4, 0, 0))
+
+    def archive(self, where, ar_date, zip_date, objects=None, header=b"header\n"):
+        objects = objects or [("a.o", macho(b"code")), ("a.o", macho(b"same-name"))]
+        lib = fat((0x0100000C, bsd_ar(objects, date=ar_date)),
+                  (0x01000007, bsd_ar([("x.o", macho(b"x86", cputype=0x01000007))], date=ar_date)))
+        path = self.tmp / where / "skia-build-mac-universal-gpu-release.zip"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_zip(path, [("build/include/a.h", header), ("build/mac-gpu/lib/Release/libskia.a", lib)],
+                  date=zip_date)
+        return path
+
+    def rebuild(self, **kwargs):
+        archive = self.archive("rebuild", ar_date=2, zip_date=(2026, 10, 23, 5, 0, 0), **kwargs)
+        manifest = minimal_manifest(archive)
+        manifest_path = self.tmp / "rebuild" / "m.json"
+        manifest_path.write_bytes(manifest_tool.canonical_bytes(manifest))
+        probe = receipt_tool.Probe(runner=fake_runner(), which=lambda name: f"/usr/bin/{name}",
+                                   hasher=lambda path: "a" * 64, realpath=lambda path: path)
+        ninja = self.tmp / "toolchain.ninja"
+        ninja.write_text("rule cxx\n  command = ccache clang++ -c $in -o $out\n")
+        receipt = receipt_tool.build_receipt("mac", ["x86_64", "arm64"], "Release", "gpu", "13.0",
+                                             [ninja], archive, probe=probe)
+        receipt["runner"]["image_version"] = "20260907.0337.1"
+        receipt["xcode"]["developer_dir"] = XCODE
+        receipt_path = self.tmp / "rebuild" / "r.json"
+        receipt_path.write_bytes(receipt_tool.canonical_bytes(receipt))
+        return archive, manifest_path, receipt_path
+
+    def run_rebind(self, archive, manifest, receipt, original=None):
+        return rebind_tool.rebind(self.pinned, archive, manifest, receipt,
+                                  {"run_id": 7, "run_attempt": 2}, original or self.ORIGINAL,
+                                  self.tmp / "out")
+
+    def test_member_identical_rebuild_rebinds_to_the_published_archive(self):
+        archive, manifest_path, receipt_path = self.rebuild()
+        written = self.run_rebind(archive, manifest_path, receipt_path)
+        manifest = json.loads(written["legal-manifest"].read_text())
+        receipt = json.loads(written["apple-toolchain"].read_text())
+        pinned_sha = compare_tool.sha256_file(self.pinned)
+        self.assertEqual(manifest["archive"]["sha256"], pinned_sha)
+        self.assertEqual(receipt["archive"]["sha256"], pinned_sha)
+        self.assertEqual(manifest_tool.validate_manifest(manifest, self.pinned), [])
+        self.assertEqual(receipt_tool.validate_receipt(receipt, self.pinned), [])
+        # The .a digests are the published ones, recomputed, not the rebuild's.
+        with zipfile.ZipFile(self.pinned) as handle:
+            published = apple_archive.sha256_bytes(handle.read("build/mac-gpu/lib/Release/libskia.a"))
+        row = next(r for r in manifest["zip_members"] if r["name"].endswith("libskia.a"))
+        self.assertEqual(row["sha256"], published)
+        self.assertNotEqual(row["sha256"], next(
+            r for r in json.loads(manifest_path.read_text())["zip_members"]
+            if r["name"].endswith("libskia.a"))["sha256"])
+        derived = manifest["derived_from"]
+        self.assertEqual(derived["rebuild_manifest"]["sha256"],
+                         apple_archive.sha256_bytes(manifest_path.read_bytes()))
+        self.assertEqual(derived["comparison"]["verdict"], compare_tool.METADATA_ONLY)
+        self.assertEqual(derived["comparison"]["sha256"],
+                         apple_archive.sha256_bytes(written["member-comparison"].read_bytes()))
+        self.assertEqual(receipt["measurement"]["original_build_log"]["image_version"], "20260907.0337.1")
+        for path in written.values():
+            self.assertIn(apple_archive.sha256_bytes(path.read_bytes()), path.name)
+
+    def test_rebuild_with_different_object_code_is_refused(self):
+        archive, manifest_path, receipt_path = self.rebuild(
+            objects=[("a.o", macho(b"CODE")), ("a.o", macho(b"same-name"))])
+        with self.assertRaisesRegex(rebind_tool.RebindError, "not member-identical.*code-differs"):
+            self.run_rebind(archive, manifest_path, receipt_path)
+
+    def test_rebuild_with_a_different_header_is_refused(self):
+        archive, manifest_path, receipt_path = self.rebuild(header=b"patched header\n")
+        with self.assertRaisesRegex(rebind_tool.RebindError, "not member-identical"):
+            self.run_rebind(archive, manifest_path, receipt_path)
+
+    def test_rebuild_on_another_toolchain_is_refused(self):
+        archive, manifest_path, receipt_path = self.rebuild()
+        with self.assertRaisesRegex(rebind_tool.RebindError, "not the original"):
+            self.run_rebind(archive, manifest_path, receipt_path,
+                            original=dict(self.ORIGINAL, xcode="Xcode_26.3"))
+
+    def test_manifest_of_another_archive_is_refused(self):
+        archive, _manifest_path, receipt_path = self.rebuild()
+        other = self.tmp / "other.json"
+        other.write_bytes(manifest_tool.canonical_bytes(minimal_manifest(self.pinned)))
+        with self.assertRaisesRegex(rebind_tool.RebindError, "does not describe the rebuild archive"):
+            self.run_rebind(archive, other, receipt_path)
 
 
 if __name__ == "__main__":

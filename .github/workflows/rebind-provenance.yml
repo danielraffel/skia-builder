@@ -142,6 +142,7 @@ jobs:
           RUN_ID: ${{ inputs.rebuild_run_id }}
           RUN_ATTEMPT: ${{ inputs.rebuild_run_attempt }}
           REBUILD_REF: ${{ steps.run.outputs.ref }}
+          REBUILD_HEAD_SHA: ${{ steps.run.outputs.head_sha }}
           ORIGINAL_JOB: ${{ inputs.original_job }}
           ORIGINAL_IMAGE: ${{ inputs.original_image_version }}
           ORIGINAL_XCODE: ${{ inputs.original_xcode }}
@@ -157,13 +158,19 @@ jobs:
             echo "::error::run $RUN_ID has no $ASSET with exactly one legal manifest and one toolchain receipt"
             exit 1
           fi
+          # Exactly the one bundle the previous step verified.
           bundles=(rebuild/skia-build-apple-attestation/"$stem".provenance-attestation.sha256-*.sigstore.json)
+          if [ ${#bundles[@]} -ne 1 ]; then
+            echo "::error::the rebuild run has ${#bundles[@]} attestation bundles for $ASSET, not exactly one"
+            exit 1
+          fi
           python3 tools/rebind_provenance.py \
             --pinned "published/$ASSET" --rebuild-archive "$cell/$ASSET" \
             --rebuild-manifest "${manifests[0]}" --rebuild-receipt "${receipts[0]}" \
             --rebuild-bundle "${bundles[0]}" \
             --rebuild-repository "$GITHUB_REPOSITORY" --rebuild-run-id "$RUN_ID" \
             --rebuild-run-attempt "$RUN_ATTEMPT" --rebuild-ref "$REBUILD_REF" \
+            --rebuild-head-sha "$REBUILD_HEAD_SHA" \
             --original-job "$ORIGINAL_JOB" --original-image-version "$ORIGINAL_IMAGE" \
             --original-xcode "$ORIGINAL_XCODE" --original-compiler-identification "$ORIGINAL_COMPILER" \
             --out-dir rebound
@@ -175,6 +182,13 @@ jobs:
         with:
           name: rebound-provenance
           path: rebound/*.json
+      # The rebuild archive, manifest, receipt and provenance bundle under the
+      # content-addressed names derived_from records, so the derivation can be
+      # re-verified from the release after the rebuild run's artifacts expire.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rebuild-evidence
+          path: rebound/evidence/*
 
   # Holds the OIDC grant; runs no third-party code and no build.
   attest:
@@ -220,12 +234,16 @@ jobs:
         with:
           name: rebound-provenance-attested
           path: rebound
+      - uses: actions/download-artifact@v7
+        with:
+          name: rebuild-evidence
+          path: evidence
       # Content-addressed names: these can only ever be new assets.
-      - name: Add the rebound records to the release
+      - name: Add the rebound records and rebuild evidence to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
           python3 tools/release_asset_guard.py --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" \
-            publish rebound/*.json
+            publish rebound/*.json evidence/*

@@ -162,10 +162,25 @@ class RebindWorkflowTests(unittest.TestCase):
         self.assertEqual(step["env"]["HEAD_SHA"], "${{ steps.run.outputs.head_sha }}")
         self.assertIn('"rebuild/$stem/$ASSET" rebuild/"$stem"/provenance-assets/*.json', script)
 
-    def test_the_rebuild_bundle_is_recorded(self):
-        script = self.step("Rebind the rebuild's records to the published archive")["run"]
+    def test_the_rebuild_bundle_and_commit_are_recorded(self):
+        step = self.step("Rebind the rebuild's records to the published archive")
+        script = step["run"]
         self.assertIn('--rebuild-bundle "${bundles[0]}"', script)
         self.assertIn("rebuild/skia-build-apple-attestation/", script)
+        # The rebind step re-checks there is exactly one bundle before using it.
+        self.assertLess(script.index('if [ ${#bundles[@]} -ne 1 ]'), script.index("rebind_provenance.py"))
+        self.assertIn('--rebuild-head-sha "$REBUILD_HEAD_SHA"', script)
+        self.assertEqual(step["env"]["REBUILD_HEAD_SHA"], "${{ steps.run.outputs.head_sha }}")
+
+    def test_rebuild_evidence_is_published_with_the_rebound_records(self):
+        paths = [step.get("with", {}).get("path") for step in self.rebind["steps"]]
+        self.assertIn("rebound/evidence/*", paths)
+        publish = self.workflow["jobs"]["publish"]
+        names = [step.get("with", {}).get("name") for step in publish["steps"]]
+        self.assertIn("rebuild-evidence", names)
+        script = next(step["run"] for step in publish["steps"] if "run" in step)
+        self.assertIn("publish rebound/*.json evidence/*", script)
+        self.assertIn("refs/heads/main", publish["if"])
 
     def test_only_the_attest_job_holds_an_oidc_grant(self):
         for name, job in self.workflow["jobs"].items():

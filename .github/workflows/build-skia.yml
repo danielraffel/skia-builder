@@ -152,10 +152,13 @@ jobs:
               selected = [cell for cell in cells if not cell.get("experimental", False)]
           else:
               selectors = {part.strip() for part in requested.split(",") if part.strip()}
+              # A single cell can also be named <platform>-<arch> (for
+              # example mac-universal), without selecting its siblings.
               selected = [
                   cell for cell in cells
                   if cell.get("selector", cell["platform"]) in selectors
                   or (cell["platform"] in selectors and cell.get("selector") is None)
+                  or f"{cell['platform']}-{cell.get('arch', '')}" in selectors
               ]
           if not selected:
               raise SystemExit(f"No build cells selected for platforms={requested!r}")
@@ -182,8 +185,9 @@ jobs:
         run: |
           PLATFORMS="${{ inputs.platforms || 'all' }}"
           SELECTOR="${{ matrix.selector || matrix.platform }}"
+          CELL="${{ matrix.platform }}-${{ matrix.arch }}"
           case ",$PLATFORMS," in
-            *,all,*|*,"$SELECTOR",*)
+            *,all,*|*,"$SELECTOR",*|*,"$CELL",*)
             echo "should_build=true" >> "$GITHUB_OUTPUT"
             ;;
             *)
@@ -367,6 +371,12 @@ jobs:
             ccache-${{ runner.os }}-${{ steps.cache-key.outputs.arch }}-${{ matrix.platform }}-${{ matrix.variant }}-${{ env.SKIA_BRANCH }}-
             ccache-${{ runner.os }}-${{ steps.cache-key.outputs.arch }}-${{ matrix.platform }}-${{ matrix.variant }}-
 
+      # The Apple toolchain receipt reports this build's ccache hits and
+      # misses, not the restored cache's history.
+      - name: Zero ccache statistics (Apple)
+        if: steps.check.outputs.should_build == 'true' && runner.os == 'macOS'
+        run: ccache --zero-stats
+
       # Resolve the MSVC toolchain before the long build so a receipt that
       # cannot be proven fails in minutes, not after the build.
       - name: Resolve Windows MSVC toolchain
@@ -463,12 +473,81 @@ jobs:
         shell: bash
         run: python tools/check_windows_archive.py "${{ steps.archive.outputs.name }}.zip"
 
+      # The archive carries no license or toolchain record, and adding one
+      # would change bytes consumers pin.  Both records are written beside it
+      # instead, bound to its sha256, and named after their own sha256 so a
+      # release can only ever gain them as new assets.  A record that does not
+      # prove what it claims is still uploaded for diagnosis under
+      # provenance/, but only a proven one is written to provenance-assets/,
+      # and the next step after the upload fails the job.
+      - name: Write Apple legal manifest and toolchain receipt
+        if: steps.check.outputs.should_build == 'true' && runner.os == 'macOS' && !inputs.test_mode
+        shell: bash
+        run: |
+          set -uo pipefail
+          CONFIG="${{ matrix.config || 'Release' }}"
+          PLATFORM="${{ matrix.platform }}"
+          VARIANT="${{ matrix.variant }}"
+          ARCHIVE="${{ steps.archive.outputs.name }}.zip"
+          case "$PLATFORM" in
+            mac) MIN_OS=13.0 ;;
+            ios) MIN_OS=14.0 ;;
+            visionos) MIN_OS=1.0 ;;
+          esac
+          out_args=()
+          receipt_args=()
+          for dir in build/tmp/skia/"${PLATFORM}_${CONFIG}"_*_"${VARIANT}"; do
+            [ -d "$dir" ] || continue
+            arch="${dir##*/"${PLATFORM}_${CONFIG}_"}"
+            arch="${arch%_"${VARIANT}"}"
+            out_args+=(--out-dir "$arch=$dir")
+            receipt_args+=(--arch "$arch" --toolchain-ninja "$dir/toolchain.ninja")
+          done
+          mkdir -p provenance provenance-assets
+          status=0
+          python3 tools/write_apple_toolchain_receipt.py provenance/apple-toolchain.json \
+            --archive "$ARCHIVE" --platform "$PLATFORM" --target "${{ matrix.target }}" \
+            --configuration "$CONFIG" --variant "$VARIANT" --min-os "$MIN_OS" \
+            "${receipt_args[@]}" --content-addressed-dir provenance-assets || status=1
+          python3 tools/write_legal_manifest.py provenance/legal-manifest.json \
+            --archive "$ARCHIVE" --source-root build/src/skia "${out_args[@]}" \
+            --platform "$PLATFORM" --variant "$VARIANT" --configuration "$CONFIG" \
+            --content-addressed-dir provenance-assets || status=1
+          echo "provenance_status=$status" >> "$GITHUB_ENV"
+          ls -la provenance provenance-assets
+
       - name: Upload artifact
         if: steps.check.outputs.should_build == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.archive.outputs.name }}
-          path: ${{ steps.archive.outputs.name }}.zip
+          path: |
+            ${{ steps.archive.outputs.name }}.zip
+            provenance-assets/*.json
+
+      - name: Upload provenance diagnostics (Apple)
+        if: always() && steps.check.outputs.should_build == 'true' && runner.os == 'macOS' && !inputs.test_mode
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.archive.outputs.name }}-provenance
+          path: provenance/
+          if-no-files-found: warn
+
+      - name: Prove Apple provenance assets
+        if: steps.check.outputs.should_build == 'true' && runner.os == 'macOS' && !inputs.test_mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="${{ steps.archive.outputs.name }}.zip"
+          shopt -s nullglob
+          receipts=(provenance-assets/*.apple-toolchain.sha256-*.json)
+          manifests=(provenance-assets/*.legal-manifest.sha256-*.json)
+          if [ "${provenance_status:-1}" != 0 ] || [ ${#receipts[@]} -ne 1 ] || [ ${#manifests[@]} -ne 1 ]; then
+            echo "::error::the toolchain receipt or legal manifest does not prove what it claims; see the ${{ steps.archive.outputs.name }}-provenance artifact"
+            exit 1
+          fi
+          python3 tools/write_apple_toolchain_receipt.py "${receipts[0]}" --archive "$ARCHIVE" --check
+          python3 tools/write_legal_manifest.py "${manifests[0]}" --archive "$ARCHIVE" --check
 
   # Portable Linux x64 Skia+Dawn, built in an Ubuntu 22.04 container so the shipped
   # libskia.a / libdawn_combined.a carry a glibc 2.34 floor (loadable on Ubuntu 22.04+,
@@ -755,9 +834,11 @@ jobs:
           if [ -n "$REPLACE_ASSET" ]; then
             replace=(--allow-replace "$REPLACE_ASSET" --reason "$REPLACE_REASON")
           fi
+          shopt -s nullglob
+          provenance=(./skia-build-*/provenance-assets/*.json)
           python3 src/tools/release_asset_guard.py --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" \
             publish ./skia-build-*/*.zip ./Skia.xcframework/Skia.xcframework.zip \
-            ./skia-release-lock/skia-release-lock.json \
+            ./skia-release-lock/skia-release-lock.json ${provenance[@]+"${provenance[@]}"} \
             --missing-release-ok --defer-new ${replace[@]+"${replace[@]}"} \
             --repin-hint "$REPIN_HINT"
 
@@ -806,6 +887,7 @@ jobs:
             ./skia-build-wasm-wasm32-gpu-release/skia-build-wasm-wasm32-gpu-release.zip
             ./Skia.xcframework/Skia.xcframework.zip
             ./skia-release-lock/skia-release-lock.json
+            ./skia-build-*/provenance-assets/*.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

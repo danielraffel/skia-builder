@@ -35,6 +35,7 @@ on:
       - 'tools/test_apple_provenance.py'
       - 'tools/rebind_provenance.py'
       - 'tools/test_rebind_workflow.py'
+      - 'tools/check_rebuild_run.py'
       - 'tools/testdata/**'
       - 'tools/requirements-lint.txt'
       - 'tools/test_lint_requirements.py'
@@ -71,6 +72,7 @@ on:
       - 'tools/test_apple_provenance.py'
       - 'tools/rebind_provenance.py'
       - 'tools/test_rebind_workflow.py'
+      - 'tools/check_rebuild_run.py'
       - 'tools/testdata/**'
       - 'tools/requirements-lint.txt'
       - 'tools/test_lint_requirements.py'
@@ -133,4 +135,4 @@ jobs:
       - run: python3 tools/test_rebind_workflow.py
       # Only main may write to a release.
       - run: python3 tools/test_publish_ref_gate.py
-      - run: python3 -m py_compile build-skia.py patches/apply_dawn_windows_arm64_vector_stl.py tools/skia_release_lock.py tools/matched_v8_link.py tools/release_asset_guard.py tools/check_windows_archive.py tools/write_windows_toolchain_provenance.py tools/apple_archive.py tools/write_legal_manifest.py tools/write_apple_toolchain_receipt.py tools/compare_archive_members.py tools/rebind_provenance.py
+      - run: python3 -m py_compile build-skia.py patches/apply_dawn_windows_arm64_vector_stl.py tools/skia_release_lock.py tools/matched_v8_link.py tools/release_asset_guard.py tools/check_windows_archive.py tools/write_windows_toolchain_provenance.py tools/apple_archive.py tools/write_legal_manifest.py tools/write_apple_toolchain_receipt.py tools/compare_archive_members.py tools/rebind_provenance.py tools/check_rebuild_run.py

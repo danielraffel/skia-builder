@@ -77,28 +77,8 @@ jobs:
             echo "::error::rebuild_run_id and rebuild_run_attempt must be numbers"; exit 1; }
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > run.json
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT" > attempt.json
-          python3 - <<'PY'
-          import json, os, sys
-          run, attempt = json.load(open("run.json")), json.load(open("attempt.json"))
-          problems = []
-          if run.get("path") != ".github/workflows/build-skia.yml":
-              problems.append(f"run is {run.get('path')!r}, not build-skia.yml")
-          if run.get("head_branch") != "main" or run.get("event") != "workflow_dispatch":
-              problems.append(f"run is a {run.get('event')} on {run.get('head_branch')!r}, not a dispatch on main")
-          if run.get("head_repository", {}).get("full_name") != os.environ["GITHUB_REPOSITORY"]:
-              problems.append("run is from another repository")
-          if run.get("run_attempt") != int(os.environ["RUN_ATTEMPT"]):
-              problems.append(f"attempt {os.environ['RUN_ATTEMPT']} is not the run's latest ({run.get('run_attempt')})")
-          if attempt.get("status") != "completed" or attempt.get("conclusion") != "success":
-              problems.append(f"attempt concluded {attempt.get('conclusion')!r}")
-          for problem in problems:
-              print(f"::error::{problem}")
-          if problems:
-              sys.exit(1)
-          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-              out.write("ref=refs/heads/main\n")
-              out.write(f"head_sha={run['head_sha']}\n")
-          PY
+          python3 tools/check_rebuild_run.py run run.json attempt.json \
+            --repository "$GITHUB_REPOSITORY" --attempt "$RUN_ATTEMPT" --github-output "$GITHUB_OUTPUT"
       - name: Download the published archive
         env:
           GH_TOKEN: ${{ github.token }}
@@ -114,12 +94,29 @@ jobs:
           run-id: ${{ inputs.rebuild_run_id }}
           github-token: ${{ github.token }}
           path: rebuild
+      # A rerun between the check and the download would replace the
+      # artifacts; read the run again and require it unchanged.
+      - name: Require the run unchanged after the download
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.rebuild_run_id }}
+          RUN_ATTEMPT: ${{ inputs.rebuild_run_attempt }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > run-after.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT" > attempt-after.json
+          python3 tools/check_rebuild_run.py same run.json run-after.json
+          python3 tools/check_rebuild_run.py same attempt.json attempt-after.json
       # The rebuild's records are trusted only through the attestation its
-      # own attest-apple job made on main, on a GitHub-hosted runner.
+      # own attest-apple job made on main, on a GitHub-hosted runner, in this
+      # exact run attempt at this exact commit.
       - name: Verify the rebuild's build-provenance attestation
         env:
           GH_TOKEN: ${{ github.token }}
           ASSET: ${{ inputs.asset }}
+          RUN_ID: ${{ inputs.rebuild_run_id }}
+          RUN_ATTEMPT: ${{ inputs.rebuild_run_attempt }}
+          HEAD_SHA: ${{ steps.run.outputs.head_sha }}
         run: |
           set -euo pipefail
           stem="${ASSET%.zip}"
@@ -133,7 +130,11 @@ jobs:
             gh attestation verify "$subject" --bundle "${bundles[0]}" \
               --repo "$GITHUB_REPOSITORY" \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/build-skia.yml" \
-              --source-ref refs/heads/main --deny-self-hosted-runners
+              --source-ref refs/heads/main --source-digest "$HEAD_SHA" \
+              --deny-self-hosted-runners --format json > verified.json
+            python3 tools/check_rebuild_run.py invocation verified.json \
+              --repository "$GITHUB_REPOSITORY" --run-id "$RUN_ID" --attempt "$RUN_ATTEMPT" \
+              --head-sha "$HEAD_SHA"
           done
       - name: Rebind the rebuild's records to the published archive
         env:

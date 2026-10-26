@@ -164,6 +164,18 @@ GPU_LIBS = {
     "linux": ["libdawn_combined.a"],
 }
 
+# Patch scripts that change sources only a Windows slice needs.  They run for
+# Windows targets only: every other platform must build, and package, Skia
+# exactly as upstream ships it.  (apply_windows_arm64ec_avx.py, for example,
+# rewrites include/private/SkFeatures.h, which every archive packages.)  Any
+# patches/apply_*.py whose name mentions Windows must be listed here; the test
+# in tools/test_patch_script_platforms.py enforces that.
+PATCH_SCRIPT_PLATFORMS = {
+    "apply_dawn_windows_arm64_vector_stl.py": {"win"},
+    "apply_skia_windows_arm64ec_archive_flags.py": {"win"},
+    "apply_windows_arm64ec_avx.py": {"win"},
+}
+
 # Directories to package
 PACKAGE_DIRS = [
     "include",
@@ -1190,6 +1202,9 @@ class SkiaBuildScript:
         if self.revision:
             subprocess.run(["git", "fetch", "--depth", "1", "origin", self.revision], check=True)
             subprocess.run(["git", "checkout", "--detach", self.revision], check=True)
+            # A cached checkout keeps edits a previous run's patches made to
+            # tracked files; start every build from the pinned tree.
+            subprocess.run(["git", "reset", "--hard", self.revision], check=True)
         else:
             subprocess.run(["git", "checkout", self.branch], check=True)
             subprocess.run(["git", "reset", "--hard", f"origin/{self.branch}"], check=True)
@@ -1393,6 +1408,11 @@ class SkiaBuildScript:
 
         # Apply Python patch scripts (for complex patches that can't use git diff)
         for patch_script in sorted(patches_dir.glob("apply_*.py")):
+            platforms = PATCH_SCRIPT_PLATFORMS.get(patch_script.name)
+            if platforms is not None and self.platform not in platforms:
+                colored_print(f"Skipping patch script {patch_script.name} "
+                              f"(only for {', '.join(sorted(platforms))})", Colors.OKCYAN)
+                continue
             colored_print(f"Running patch script: {patch_script.name}", Colors.OKBLUE)
             try:
                 subprocess.run([sys.executable, str(patch_script), str(SKIA_SRC_DIR)], check=True)

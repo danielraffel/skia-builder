@@ -28,6 +28,13 @@ on:
       - 'tools/test_check_windows_archive.py'
       - 'tools/write_windows_toolchain_provenance.py'
       - 'tools/test_windows_toolchain_provenance.py'
+      - 'tools/apple_archive.py'
+      - 'tools/write_legal_manifest.py'
+      - 'tools/write_apple_toolchain_receipt.py'
+      - 'tools/compare_archive_members.py'
+      - 'tools/test_apple_provenance.py'
+      - 'tools/rebind_provenance.py'
+      - 'tools/test_rebind_workflow.py'
       - 'tools/test_patch_script_platforms.py'
       - 'tools/testdata/**'
       - 'tools/requirements-lint.txt'
@@ -58,6 +65,13 @@ on:
       - 'tools/test_check_windows_archive.py'
       - 'tools/write_windows_toolchain_provenance.py'
       - 'tools/test_windows_toolchain_provenance.py'
+      - 'tools/apple_archive.py'
+      - 'tools/write_legal_manifest.py'
+      - 'tools/write_apple_toolchain_receipt.py'
+      - 'tools/compare_archive_members.py'
+      - 'tools/test_apple_provenance.py'
+      - 'tools/rebind_provenance.py'
+      - 'tools/test_rebind_workflow.py'
       - 'tools/test_patch_script_platforms.py'
       - 'tools/testdata/**'
       - 'tools/requirements-lint.txt'
@@ -116,6 +130,11 @@ jobs:
       - run: python3 tools/test_release_asset_guard.py
       - run: python3 tools/test_windows_toolchain_provenance.py
       - run: python3 tools/test_check_windows_archive.py
+      # Apple archives publish a legal manifest and toolchain receipt beside
+      # them. The manifest test builds a small tree with real ninja.
+      - run: sudo apt-get install -y -qq ninja-build
+      - run: python3 tools/test_apple_provenance.py
+      - run: python3 tools/test_rebind_workflow.py
       # Only main may write to a release.
       - run: python3 tools/test_publish_ref_gate.py
-      - run: python3 -m py_compile build-skia.py patches/apply_dawn_windows_arm64_vector_stl.py tools/skia_release_lock.py tools/matched_v8_link.py tools/release_asset_guard.py tools/check_windows_archive.py tools/write_windows_toolchain_provenance.py
+      - run: python3 -m py_compile build-skia.py patches/apply_dawn_windows_arm64_vector_stl.py tools/skia_release_lock.py tools/matched_v8_link.py tools/release_asset_guard.py tools/check_windows_archive.py tools/write_windows_toolchain_provenance.py tools/apple_archive.py tools/write_legal_manifest.py tools/write_apple_toolchain_receipt.py tools/compare_archive_members.py tools/rebind_provenance.py

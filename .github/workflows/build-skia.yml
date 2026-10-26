@@ -39,6 +39,11 @@ on:
         required: false
         type: string
         default: ''
+      apple_xcode:
+        description: 'Xcode version for Apple builds (for example 16.4); empty keeps the image default. Refuses to build if the image does not ship it.'
+        required: false
+        type: string
+        default: ''
       apple_runner:
         description: 'GitHub-hosted macOS runner label for Apple builds'
         required: false
@@ -152,10 +157,13 @@ jobs:
               selected = [cell for cell in cells if not cell.get("experimental", False)]
           else:
               selectors = {part.strip() for part in requested.split(",") if part.strip()}
+              # A single cell can also be named <platform>-<arch> (for
+              # example mac-universal), without selecting its siblings.
               selected = [
                   cell for cell in cells
                   if cell.get("selector", cell["platform"]) in selectors
                   or (cell["platform"] in selectors and cell.get("selector") is None)
+                  or f"{cell['platform']}-{cell.get('arch', '')}" in selectors
               ]
           if not selected:
               raise SystemExit(f"No build cells selected for platforms={requested!r}")
@@ -175,6 +183,7 @@ jobs:
     env:
       SKIA_BRANCH: ${{ needs.resolve-skia.outputs.tag }}
       SKIA_REVISION: ${{ needs.resolve-skia.outputs.skia }}
+      DAWN_REVISION: ${{ needs.resolve-skia.outputs.dawn }}
     steps:
       - name: Check if platform should build
         id: check
@@ -182,8 +191,9 @@ jobs:
         run: |
           PLATFORMS="${{ inputs.platforms || 'all' }}"
           SELECTOR="${{ matrix.selector || matrix.platform }}"
+          CELL="${{ matrix.platform }}-${{ matrix.arch }}"
           case ",$PLATFORMS," in
-            *,all,*|*,"$SELECTOR",*)
+            *,all,*|*,"$SELECTOR",*|*,"$CELL",*)
             echo "should_build=true" >> "$GITHUB_OUTPUT"
             ;;
             *)
@@ -367,6 +377,29 @@ jobs:
             ccache-${{ runner.os }}-${{ steps.cache-key.outputs.arch }}-${{ matrix.platform }}-${{ matrix.variant }}-${{ env.SKIA_BRANCH }}-
             ccache-${{ runner.os }}-${{ steps.cache-key.outputs.arch }}-${{ matrix.platform }}-${{ matrix.variant }}-
 
+      # Reproducing a published archive needs the Xcode it was built with,
+      # not whatever the image currently defaults to.
+      - name: Select Xcode (Apple)
+        if: steps.check.outputs.should_build == 'true' && runner.os == 'macOS' && inputs.apple_xcode != ''
+        env:
+          APPLE_XCODE: ${{ inputs.apple_xcode }}
+        run: |
+          set -euo pipefail
+          developer="/Applications/Xcode_${APPLE_XCODE}.app/Contents/Developer"
+          if [ ! -d "$developer" ]; then
+            echo "::error::Xcode $APPLE_XCODE is not installed on image ${ImageOS:-?} ${ImageVersion:-?}; available: $(printf '%s ' /Applications/Xcode_*.app)"
+            exit 1
+          fi
+          echo "DEVELOPER_DIR=$developer" >> "$GITHUB_ENV"
+          DEVELOPER_DIR="$developer" xcodebuild -version
+          DEVELOPER_DIR="$developer" xcrun clang --version
+
+      # The Apple toolchain receipt reports this build's ccache hits and
+      # misses, not the restored cache's history.
+      - name: Zero ccache statistics (Apple)
+        if: steps.check.outputs.should_build == 'true' && runner.os == 'macOS'
+        run: ccache --zero-stats
+
       # Resolve the MSVC toolchain before the long build so a receipt that
       # cannot be proven fails in minutes, not after the build.
       - name: Resolve Windows MSVC toolchain
@@ -463,12 +496,151 @@ jobs:
         shell: bash
         run: python tools/check_windows_archive.py "${{ steps.archive.outputs.name }}.zip"
 
+      # The archive carries no license or toolchain record, and adding one
+      # would change bytes consumers pin.  Both records are written beside it
+      # instead, bound to its sha256, and named after their own sha256 so a
+      # release can only ever gain them as new assets.  A record that does not
+      # prove what it claims is still uploaded for diagnosis under
+      # provenance/, but only a proven one is written to provenance-assets/,
+      # and the next step after the upload fails the job.
+      - name: Write Apple legal manifest and toolchain receipt
+        if: steps.check.outputs.should_build == 'true' && runner.os == 'macOS' && !inputs.test_mode
+        shell: bash
+        run: |
+          set -uo pipefail
+          CONFIG="${{ matrix.config || 'Release' }}"
+          PLATFORM="${{ matrix.platform }}"
+          VARIANT="${{ matrix.variant }}"
+          ARCHIVE="${{ steps.archive.outputs.name }}.zip"
+          case "$PLATFORM" in
+            mac) MIN_OS=13.0 ;;
+            ios) MIN_OS=14.0 ;;
+            visionos) MIN_OS=1.0 ;;
+          esac
+          out_args=()
+          receipt_args=()
+          for dir in build/tmp/skia/"${PLATFORM}_${CONFIG}"_*_"${VARIANT}"; do
+            [ -d "$dir" ] || continue
+            arch="${dir##*/"${PLATFORM}_${CONFIG}_"}"
+            arch="${arch%_"${VARIANT}"}"
+            out_args+=(--out-dir "$arch=$dir")
+            receipt_args+=(--arch "$arch" --toolchain-ninja "$dir/toolchain.ninja")
+          done
+          mkdir -p provenance provenance-assets
+          status=0
+          python3 tools/write_apple_toolchain_receipt.py provenance/apple-toolchain.json \
+            --archive "$ARCHIVE" --platform "$PLATFORM" --target "${{ matrix.target }}" \
+            --configuration "$CONFIG" --variant "$VARIANT" --min-os "$MIN_OS" \
+            "${receipt_args[@]}" --content-addressed-dir provenance-assets || status=1
+          python3 tools/write_legal_manifest.py provenance/legal-manifest.json \
+            --archive "$ARCHIVE" --source-root build/src/skia "${out_args[@]}" \
+            --platform "$PLATFORM" --variant "$VARIANT" --configuration "$CONFIG" \
+            --expect-skia-revision "$SKIA_REVISION" --expect-dawn-revision "$DAWN_REVISION" \
+            --content-addressed-dir provenance-assets || status=1
+          echo "provenance_status=$status" >> "$GITHUB_ENV"
+          ls -la provenance provenance-assets
+
       - name: Upload artifact
         if: steps.check.outputs.should_build == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.archive.outputs.name }}
-          path: ${{ steps.archive.outputs.name }}.zip
+          path: |
+            ${{ steps.archive.outputs.name }}.zip
+            provenance-assets/*.json
+
+      - name: Upload provenance diagnostics (Apple)
+        if: always() && steps.check.outputs.should_build == 'true' && runner.os == 'macOS' && !inputs.test_mode
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.archive.outputs.name }}-provenance
+          path: provenance/
+          if-no-files-found: warn
+
+      - name: Prove Apple provenance assets
+        if: steps.check.outputs.should_build == 'true' && runner.os == 'macOS' && !inputs.test_mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="${{ steps.archive.outputs.name }}.zip"
+          shopt -s nullglob
+          receipts=(provenance-assets/*.apple-toolchain.sha256-*.json)
+          manifests=(provenance-assets/*.legal-manifest.sha256-*.json)
+          if [ "${provenance_status:-1}" != 0 ] || [ ${#receipts[@]} -ne 1 ] || [ ${#manifests[@]} -ne 1 ]; then
+            echo "::error::the toolchain receipt or legal manifest does not prove what it claims; see the ${{ steps.archive.outputs.name }}-provenance artifact"
+            exit 1
+          fi
+          python3 tools/write_apple_toolchain_receipt.py "${receipts[0]}" --archive "$ARCHIVE" --check
+          python3 tools/write_legal_manifest.py "${manifests[0]}" --archive "$ARCHIVE" --check
+
+
+  # The build jobs run Skia's DEPS-fetched third-party code, so none of them
+  # holds an OIDC grant. This job runs no third-party code: it downloads the
+  # Apple cells' outputs, which each build already proved with --check, and
+  # signs one build-provenance attestation over every archive, receipt and
+  # manifest, so a consumer can verify which workflow, ref and commit
+  # produced them. The release asset digest alone proves only that the bytes
+  # did not change after upload.
+  attest-apple:
+    # Runs in test mode too (and finds nothing to attest), so the release job
+    # that needs it is never skipped by it.
+    needs: build-skia
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download Apple cell outputs
+        uses: actions/download-artifact@v7
+        with:
+          pattern: skia-build-*-release
+          path: cells
+      - name: List the attested subjects
+        id: subjects
+        run: |
+          set -euo pipefail
+          : > subjects.sha256
+          for cell in cells/*/; do
+            [ -d "$cell/provenance-assets" ] || continue
+            name="$(basename "$cell")"
+            (cd "$cell" && sha256sum "$name.zip" provenance-assets/*.json) | \
+              sed -E 's#  (provenance-assets/)?#  #' >> subjects.sha256
+            echo "$name" >> cells.txt
+          done
+          cat subjects.sha256
+          if [ ! -s subjects.sha256 ]; then
+            echo "no Apple cell produced provenance records" >> "$GITHUB_STEP_SUMMARY"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Attest Apple archives and provenance records
+        id: attest
+        if: steps.subjects.outputs.present == 'true'
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-checksums: subjects.sha256
+      # The Sigstore bundle lets a consumer verify offline. Each Apple cell
+      # gets a copy named after its archive and the bundle's own sha256.
+      - name: Keep the attestation bundle per cell
+        if: steps.subjects.outputs.present == 'true'
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          mkdir -p attestation
+          digest="$(sha256sum "$BUNDLE" | cut -d' ' -f1)"
+          while read -r name; do
+            cp "$BUNDLE" "attestation/${name}.provenance-attestation.sha256-${digest}.sigstore.json"
+          done < cells.txt
+          ls -la attestation
+      - name: Upload attestation bundles
+        if: steps.subjects.outputs.present == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: skia-build-apple-attestation
+          path: attestation/*.sigstore.json
 
   # Portable Linux x64 Skia+Dawn, built in an Ubuntu 22.04 container so the shipped
   # libskia.a / libdawn_combined.a carry a glibc 2.34 floor (loadable on Ubuntu 22.04+,
@@ -720,7 +892,7 @@ jobs:
 
   create-release:
     if: ${{ !inputs.skip_release && inputs.platforms == 'all' && github.ref == 'refs/heads/main' }}
-    needs: [resolve-skia, build-skia, create-xcframework, portable-linux-x64]
+    needs: [resolve-skia, build-skia, create-xcframework, portable-linux-x64, attest-apple]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -755,9 +927,11 @@ jobs:
           if [ -n "$REPLACE_ASSET" ]; then
             replace=(--allow-replace "$REPLACE_ASSET" --reason "$REPLACE_REASON")
           fi
+          shopt -s nullglob
+          provenance=(./skia-build-*/provenance-assets/*.json ./skia-build-*-attestation/*.sigstore.json)
           python3 src/tools/release_asset_guard.py --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" \
             publish ./skia-build-*/*.zip ./Skia.xcframework/Skia.xcframework.zip \
-            ./skia-release-lock/skia-release-lock.json \
+            ./skia-release-lock/skia-release-lock.json ${provenance[@]+"${provenance[@]}"} \
             --missing-release-ok --defer-new ${replace[@]+"${replace[@]}"} \
             --repin-hint "$REPIN_HINT"
 
@@ -806,6 +980,8 @@ jobs:
             ./skia-build-wasm-wasm32-gpu-release/skia-build-wasm-wasm32-gpu-release.zip
             ./Skia.xcframework/Skia.xcframework.zip
             ./skia-release-lock/skia-release-lock.json
+            ./skia-build-*/provenance-assets/*.json
+            ./skia-build-*-attestation/*.sigstore.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

@@ -77,28 +77,8 @@ jobs:
             echo "::error::rebuild_run_id and rebuild_run_attempt must be numbers"; exit 1; }
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > run.json
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT" > attempt.json
-          python3 - <<'PY'
-          import json, os, sys
-          run, attempt = json.load(open("run.json")), json.load(open("attempt.json"))
-          problems = []
-          if run.get("path") != ".github/workflows/build-skia.yml":
-              problems.append(f"run is {run.get('path')!r}, not build-skia.yml")
-          if run.get("head_branch") != "main" or run.get("event") != "workflow_dispatch":
-              problems.append(f"run is a {run.get('event')} on {run.get('head_branch')!r}, not a dispatch on main")
-          if run.get("head_repository", {}).get("full_name") != os.environ["GITHUB_REPOSITORY"]:
-              problems.append("run is from another repository")
-          if run.get("run_attempt") != int(os.environ["RUN_ATTEMPT"]):
-              problems.append(f"attempt {os.environ['RUN_ATTEMPT']} is not the run's latest ({run.get('run_attempt')})")
-          if attempt.get("status") != "completed" or attempt.get("conclusion") != "success":
-              problems.append(f"attempt concluded {attempt.get('conclusion')!r}")
-          for problem in problems:
-              print(f"::error::{problem}")
-          if problems:
-              sys.exit(1)
-          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-              out.write("ref=refs/heads/main\n")
-              out.write(f"head_sha={run['head_sha']}\n")
-          PY
+          python3 tools/check_rebuild_run.py run run.json attempt.json \
+            --repository "$GITHUB_REPOSITORY" --attempt "$RUN_ATTEMPT" --github-output "$GITHUB_OUTPUT"
       - name: Download the published archive
         env:
           GH_TOKEN: ${{ github.token }}
@@ -114,12 +94,29 @@ jobs:
           run-id: ${{ inputs.rebuild_run_id }}
           github-token: ${{ github.token }}
           path: rebuild
+      # A rerun between the check and the download would replace the
+      # artifacts; read the run again and require it unchanged.
+      - name: Require the run unchanged after the download
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.rebuild_run_id }}
+          RUN_ATTEMPT: ${{ inputs.rebuild_run_attempt }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > run-after.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT" > attempt-after.json
+          python3 tools/check_rebuild_run.py same run.json run-after.json
+          python3 tools/check_rebuild_run.py same attempt.json attempt-after.json
       # The rebuild's records are trusted only through the attestation its
-      # own attest-apple job made on main, on a GitHub-hosted runner.
+      # own attest-apple job made on main, on a GitHub-hosted runner, in this
+      # exact run attempt at this exact commit.
       - name: Verify the rebuild's build-provenance attestation
         env:
           GH_TOKEN: ${{ github.token }}
           ASSET: ${{ inputs.asset }}
+          RUN_ID: ${{ inputs.rebuild_run_id }}
+          RUN_ATTEMPT: ${{ inputs.rebuild_run_attempt }}
+          HEAD_SHA: ${{ steps.run.outputs.head_sha }}
         run: |
           set -euo pipefail
           stem="${ASSET%.zip}"
@@ -133,7 +130,11 @@ jobs:
             gh attestation verify "$subject" --bundle "${bundles[0]}" \
               --repo "$GITHUB_REPOSITORY" \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/build-skia.yml" \
-              --source-ref refs/heads/main --deny-self-hosted-runners
+              --source-ref refs/heads/main --source-digest "$HEAD_SHA" \
+              --deny-self-hosted-runners --format json > verified.json
+            python3 tools/check_rebuild_run.py invocation verified.json \
+              --repository "$GITHUB_REPOSITORY" --run-id "$RUN_ID" --attempt "$RUN_ATTEMPT" \
+              --head-sha "$HEAD_SHA"
           done
       - name: Rebind the rebuild's records to the published archive
         env:
@@ -141,6 +142,7 @@ jobs:
           RUN_ID: ${{ inputs.rebuild_run_id }}
           RUN_ATTEMPT: ${{ inputs.rebuild_run_attempt }}
           REBUILD_REF: ${{ steps.run.outputs.ref }}
+          REBUILD_HEAD_SHA: ${{ steps.run.outputs.head_sha }}
           ORIGINAL_JOB: ${{ inputs.original_job }}
           ORIGINAL_IMAGE: ${{ inputs.original_image_version }}
           ORIGINAL_XCODE: ${{ inputs.original_xcode }}
@@ -156,11 +158,19 @@ jobs:
             echo "::error::run $RUN_ID has no $ASSET with exactly one legal manifest and one toolchain receipt"
             exit 1
           fi
+          # Exactly the one bundle the previous step verified.
+          bundles=(rebuild/skia-build-apple-attestation/"$stem".provenance-attestation.sha256-*.sigstore.json)
+          if [ ${#bundles[@]} -ne 1 ]; then
+            echo "::error::the rebuild run has ${#bundles[@]} attestation bundles for $ASSET, not exactly one"
+            exit 1
+          fi
           python3 tools/rebind_provenance.py \
             --pinned "published/$ASSET" --rebuild-archive "$cell/$ASSET" \
             --rebuild-manifest "${manifests[0]}" --rebuild-receipt "${receipts[0]}" \
+            --rebuild-bundle "${bundles[0]}" \
             --rebuild-repository "$GITHUB_REPOSITORY" --rebuild-run-id "$RUN_ID" \
             --rebuild-run-attempt "$RUN_ATTEMPT" --rebuild-ref "$REBUILD_REF" \
+            --rebuild-head-sha "$REBUILD_HEAD_SHA" \
             --original-job "$ORIGINAL_JOB" --original-image-version "$ORIGINAL_IMAGE" \
             --original-xcode "$ORIGINAL_XCODE" --original-compiler-identification "$ORIGINAL_COMPILER" \
             --out-dir rebound
@@ -172,6 +182,13 @@ jobs:
         with:
           name: rebound-provenance
           path: rebound/*.json
+      # The rebuild archive, manifest, receipt and provenance bundle under the
+      # content-addressed names derived_from records, so the derivation can be
+      # re-verified from the release after the rebuild run's artifacts expire.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rebuild-evidence
+          path: rebound/evidence/*
 
   # Holds the OIDC grant; runs no third-party code and no build.
   attest:
@@ -217,12 +234,16 @@ jobs:
         with:
           name: rebound-provenance-attested
           path: rebound
+      - uses: actions/download-artifact@v7
+        with:
+          name: rebuild-evidence
+          path: evidence
       # Content-addressed names: these can only ever be new assets.
-      - name: Add the rebound records to the release
+      - name: Add the rebound records and rebuild evidence to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
           python3 tools/release_asset_guard.py --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" \
-            publish rebound/*.json
+            publish rebound/*.json evidence/*

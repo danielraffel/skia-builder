@@ -19,8 +19,9 @@ them to the published archive:
   copied; per-member and symbol-table digests must equal the rebuild's, and
   slices are keyed by CPU type and subtype, so no slice goes uncompared;
 * both records gain ``derived_from``, naming the rebuild's content-addressed
-  manifest and receipt, the rebuild archive, the comparison report and the
-  run that built it;
+  manifest and receipt, the rebuild archive, the comparison report, the run
+  that built it, and that run's build-provenance bundle, against which a
+  consumer re-verifies the rebuild;
 * the receipt states that its toolchain values were measured on the rebuild's
   runner, and records the values the original build's job log shows, which
   must match.
@@ -33,6 +34,7 @@ import argparse
 import copy
 import hashlib
 import json
+import re
 import sys
 import zipfile
 from pathlib import Path
@@ -126,8 +128,47 @@ def original_build_matches(receipt: dict, original: dict) -> list[str]:
     return problems
 
 
+def rebuild_bundle_record(bundle: Path, stem: str) -> dict:
+    """The rebuild run's build-provenance bundle, as the records name it.
+
+    A consumer re-verifies the rebuild archive, manifest and receipt against
+    this bundle (build-skia.yml on main), so the records name it by its own
+    content-addressed file name and digest.
+    """
+    data = bundle.read_bytes()
+    digest = sha256_bytes(data)
+    expected = f"{stem}.provenance-attestation.sha256-{digest}.sigstore.json"
+    require(bundle.name == expected,
+            f"the rebuild bundle is named {bundle.name!r}, not its content-addressed {expected!r}")
+    try:
+        media_type = json.loads(data).get("mediaType", "")
+    except ValueError:
+        media_type = ""
+    require(str(media_type).startswith("application/vnd.dev.sigstore.bundle"),
+            "the rebuild bundle is not a Sigstore bundle")
+    return {"name": bundle.name, "sha256": digest}
+
+
+HEX_40 = re.compile(r"^[0-9a-f]{40}$")
+
+
+def evidence_name(stem: str, kind: str, data: bytes, suffix: str) -> str:
+    """The content-addressed release-asset name of one piece of rebuild evidence."""
+    return f"{stem}.rebuild{kind}.sha256-{sha256_bytes(data)}{suffix}"
+
+
 def rebind(pinned: Path, probe_archive: Path, probe_manifest: Path, probe_receipt: Path,
-           probe_run: dict, original_build: dict, out_dir: Path) -> dict[str, Path]:
+           probe_run: dict, original_build: dict, out_dir: Path,
+           rebuild_bundle: Path) -> dict[str, Path]:
+    """Write the rebound records to ``out_dir`` and the rebuild evidence to ``out_dir/evidence``.
+
+    The evidence (the rebuild archive, its manifest, receipt and provenance
+    bundle) is copied under content-addressed ``<stem>.rebuild...`` names,
+    which are the names ``derived_from`` records, so it can be published next
+    to the rebound records and re-verified after the run's artifacts expire.
+    """
+    require(isinstance(probe_run.get("head_sha"), str) and HEX_40.match(probe_run["head_sha"]),
+            "the rebuild run's head commit is required")
     report = compare_archive_members.compare(pinned, probe_archive, limit=5)
     require(report["verdict"] in ACCEPTED_VERDICTS,
             f"the rebuild is not member-identical to {pinned.name}: {report['verdict']} "
@@ -147,17 +188,27 @@ def rebind(pinned: Path, probe_archive: Path, probe_manifest: Path, probe_receip
     require(not mismatches, "the rebuild toolchain is not the original build's: " + "; ".join(mismatches))
 
     stem = pinned.name.removesuffix(".zip")
+    bundle_record = rebuild_bundle_record(rebuild_bundle, stem)
     report_bytes = canonical(report)
     report_name = addressed(stem, "member-comparison", report_bytes)
+    archive_bytes, bundle_bytes = probe_archive.read_bytes(), rebuild_bundle.read_bytes()
+    evidence = {
+        "rebuild_archive": (evidence_name(stem, "", archive_bytes, ".zip"), archive_bytes),
+        "rebuild_manifest": (evidence_name(stem, ".legal-manifest", manifest_bytes, ".json"), manifest_bytes),
+        "rebuild_receipt": (evidence_name(stem, ".apple-toolchain", receipt_bytes, ".json"), receipt_bytes),
+        "rebuild_bundle": (evidence_name(stem, ".provenance-attestation", bundle_bytes, ".sigstore.json"),
+                           bundle_bytes),
+    }
+    require(bundle_record["sha256"] == sha256_bytes(bundle_bytes), "the rebuild bundle changed while reading it")
     derived_from = {
         "method": REBIND_METHOD,
         "comparison": {"name": report_name, "sha256": sha256_bytes(report_bytes),
                        "verdict": report["verdict"]},
-        "rebuild_archive": {"name": probe_archive.name, "sha256": probe_sha},
-        "rebuild_manifest": {"name": probe_manifest.name, "sha256": sha256_bytes(manifest_bytes)},
-        "rebuild_receipt": {"name": probe_receipt.name, "sha256": sha256_bytes(receipt_bytes)},
+        **{key: {"name": name, "sha256": sha256_bytes(data)} for key, (name, data) in evidence.items()},
         "rebuild_run": probe_run,
     }
+    require(derived_from["rebuild_archive"]["sha256"] == probe_sha,
+            "the rebuild archive changed while reading it")
 
     manifest = rebind_manifest(manifest_probe, pinned)
     manifest["derived_from"] = derived_from
@@ -182,6 +233,11 @@ def rebind(pinned: Path, probe_archive: Path, probe_manifest: Path, probe_receip
         path = out_dir / addressed(stem, kind, data)
         path.write_bytes(data)
         written[kind] = path
+    (out_dir / "evidence").mkdir(exist_ok=True)
+    for key, (name, data) in evidence.items():
+        path = out_dir / "evidence" / name
+        path.write_bytes(data)
+        written[key] = path
     return written
 
 
@@ -192,10 +248,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--rebuild-archive", type=Path, required=True)
     parser.add_argument("--rebuild-manifest", type=Path, required=True)
     parser.add_argument("--rebuild-receipt", type=Path, required=True)
+    parser.add_argument("--rebuild-bundle", type=Path, required=True,
+                        help="the rebuild run's build-provenance bundle, as attest-apple published it")
     parser.add_argument("--rebuild-repository", default="danielraffel/skia-builder")
     parser.add_argument("--rebuild-run-id", type=int, required=True)
     parser.add_argument("--rebuild-run-attempt", type=int, required=True)
     parser.add_argument("--rebuild-ref", required=True, help="the ref the rebuild ran on")
+    parser.add_argument("--rebuild-head-sha", required=True, help="the commit the rebuild ran at")
     parser.add_argument("--original-job", type=int, required=True,
                         help="the job that built the published archive")
     parser.add_argument("--original-image-version", required=True)
@@ -207,11 +266,12 @@ def main(argv: list[str] | None = None) -> int:
         written = rebind(
             args.pinned, args.rebuild_archive, args.rebuild_manifest, args.rebuild_receipt,
             {"repository": args.rebuild_repository, "run_id": args.rebuild_run_id,
-             "run_attempt": args.rebuild_run_attempt, "ref": args.rebuild_ref},
+             "run_attempt": args.rebuild_run_attempt, "ref": args.rebuild_ref,
+             "head_sha": args.rebuild_head_sha},
             {"job": args.original_job, "image_version": args.original_image_version,
              "xcode": args.original_xcode,
              "compiler_identification": args.original_compiler_identification},
-            args.out_dir)
+            args.out_dir, args.rebuild_bundle)
     except (RebindError, OSError, ValueError, KeyError, zipfile.BadZipFile) as error:
         print(f"rebind-provenance: {error}", file=sys.stderr)
         return 1

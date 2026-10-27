@@ -42,6 +42,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 # Define ANSI color codes
@@ -547,7 +548,23 @@ class SkiaBuildScript:
     def sync_deps(self):
         os.chdir(SKIA_SRC_DIR)
         colored_print("Syncing Deps...", Colors.OKBLUE)
-        subprocess.run([sys.executable, "tools/git-sync-deps"], check=True)
+        command = [sys.executable, "tools/git-sync-deps"]
+        # googlesource occasionally terminates a large fetch with HTTP 502 or
+        # an incomplete chunked response.  The checkout is safe to retry: the
+        # helper resumes the shallow clones and verifies each pinned revision.
+        for attempt in range(1, 4):
+            try:
+                subprocess.run(command, check=True)
+                return
+            except subprocess.CalledProcessError:
+                if attempt == 3:
+                    raise
+                delay = attempt * 10
+                colored_print(
+                    f"Dependency sync failed (attempt {attempt}/3); retrying in {delay}s...",
+                    Colors.WARNING,
+                )
+                time.sleep(delay)
 
     def stabilize_windows_arm64_dep_sync(self):
         """Make Skia's dependency checkout deterministic on Windows ARM64.

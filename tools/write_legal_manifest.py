@@ -16,8 +16,12 @@ build itself, without changing the archive:
 Matching an object member to its object file by digest, rather than by name,
 is what makes the chain exhaustive: archives repeat member names (Dawn's
 combined archive has dozens of duplicates), but a member's bytes are the
-object's bytes.  ``gn desc <label> deps --all`` is recorded per packaged GN
-library as the target graph that produced it.
+object's bytes.  Apple arm64e slices are the one deliberate exception: Xcode
+can emit a second architecture variant whose object bytes and headers differ
+from the arm64 output left in the GN tree, so a unique architecture-matched
+GN object name is used for source and license attribution.  ``gn desc <label>
+deps --all`` is recorded per packaged GN library as the target graph that
+produced it.
 
 The manifest is ``exhaustive`` only when every zip member and every object
 member resolved to its origin, every object file resolved to at least one
@@ -150,6 +154,7 @@ class BuildGraph:
         self.runner = runner
         self.gaps: list[dict[str, str]] = []
         self.objects: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        self.objects_by_name: dict[str, list[tuple[str, str]]] = defaultdict(list)
         self.sources: dict[str, set[str]] = defaultdict(set)
         self.build_dirs: list[tuple[Path, Path]] = []  # (ninja dir, source dir it mirrors)
         self._license_cache: dict[Path, list[str]] = {}
@@ -166,6 +171,7 @@ class BuildGraph:
             for path in sorted(out_dir.rglob("*")):
                 if path.suffix in OBJECT_SUFFIXES and path.is_file():
                     self.objects[sha256_file(path)].append((arch, str(path)))
+                    self.objects_by_name[path.name].append((arch, str(path)))
             for build_dir in ninja_dirs(out_dir):
                 mirrored = cmake_source_dir(build_dir) or self.source_root
                 self.build_dirs.append((build_dir, Path(os.path.realpath(mirrored))))
@@ -189,11 +195,33 @@ class BuildGraph:
             self._real[key] = os.path.realpath(os.path.join(build_dir, item))
         return self._real[key]
 
-    def match_object(self, data: bytes) -> list[tuple[str, str]]:
+    def match_object(self, data: bytes, name: str = "", arch: str = "") -> list[tuple[str, str]]:
         for candidate in apple_archive.unpadded_candidates(data):
             found = self.objects.get(apple_archive.sha256_bytes(candidate))
             if found:
                 return found
+        if not name:
+            return []
+
+        # libtool prefixes GN object names with the archive name (for example
+        # ``libskia.SkCanvas.o``).  iOS/visionOS also carry an arm64e slice
+        # whose object header and code bytes differ from the arm64 object that
+        # GN leaves in the output tree.  For legal attribution the source
+        # object is still the same; use a unique architecture-matched filename
+        # fallback when the content digest cannot match either variant.
+        names = [name]
+        if "." in name:
+            names.append(name.split(".", 1)[1])
+        aliases = {"arm64e": "arm64", "arm64v8": "arm64", "x86_64h": "x86_64"}
+        wanted_arch = aliases.get(arch, arch)
+        candidates: list[tuple[str, str]] = []
+        for candidate_name in names:
+            candidates.extend(self.objects_by_name.get(candidate_name, []))
+        if wanted_arch:
+            candidates = [row for row in candidates if row[0] == wanted_arch]
+        unique = sorted(set(candidates))
+        if len(unique) == 1:
+            return unique
         return []
 
     # -- classification and licenses ---------------------------------------
@@ -505,7 +533,7 @@ def describe_static_archive(name: str, data: bytes, graph: BuildGraph) -> dict[s
         parsed = apple_archive.parse_archive(piece.data)
         members = []
         for index, member in enumerate(parsed.members):
-            objects = graph.match_object(member.data)
+            objects = graph.match_object(member.data, member.name, piece.arch)
             where = f"{name}[{piece.arch}]#{index}:{member.name}"
             row: dict[str, object] = {"name": member.name, "sha256": member.sha256}
             if not objects:

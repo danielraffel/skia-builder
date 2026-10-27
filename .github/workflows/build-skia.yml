@@ -613,6 +613,13 @@ jobs:
             mv cells-lone cells
           fi
           shopt -u nullglob
+          # Anything still at the top level is a layout this step does not
+          # understand; refuse it rather than skip the attestation unnoticed.
+          if [ -e cells/provenance-assets ] || compgen -G 'cells/*.zip' > /dev/null; then
+            echo "::error::unrecognised cells/ layout; not attesting"
+            ls -la cells
+            exit 1
+          fi
           : > subjects.sha256
           for cell in cells/*/; do
             [ -d "$cell/provenance-assets" ] || continue

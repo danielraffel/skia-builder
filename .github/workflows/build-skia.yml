@@ -600,6 +600,19 @@ jobs:
         id: subjects
         run: |
           set -euo pipefail
+          # download-artifact unpacks a lone matching artifact straight into
+          # cells/ rather than cells/<name>/, which is what a single-platform
+          # dispatch produces. Give it its own directory so the loop sees it.
+          shopt -s nullglob
+          lone=(cells/*.zip)
+          if [ ${#lone[@]} -eq 1 ] && [ -d cells/provenance-assets ]; then
+            name="$(basename "${lone[0]}" .zip)"
+            mkdir -p "cells-lone/$name"
+            mv cells/* "cells-lone/$name/"
+            rmdir cells
+            mv cells-lone cells
+          fi
+          shopt -u nullglob
           : > subjects.sha256
           for cell in cells/*/; do
             [ -d "$cell/provenance-assets" ] || continue

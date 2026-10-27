@@ -613,9 +613,11 @@ jobs:
             mv cells-lone cells
           fi
           shopt -u nullglob
-          # Anything still at the top level is a layout this step does not
-          # understand; refuse it rather than skip the attestation unnoticed.
-          if [ -e cells/provenance-assets ] || compgen -G 'cells/*.zip' > /dev/null; then
+          # Provenance records still at the top level are an Apple cell this
+          # step did not recognise; refuse it rather than skip the attestation
+          # unnoticed. A lone zip without them is a non-Apple cell (Windows,
+          # Linux, wasm), which has nothing to attest.
+          if [ -e cells/provenance-assets ]; then
             echo "::error::unrecognised cells/ layout; not attesting"
             ls -la cells
             exit 1

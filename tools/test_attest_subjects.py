@@ -78,6 +78,26 @@ class AttestSubjectsTest(unittest.TestCase):
             self.assertNotEqual(run.returncode, 0)
             self.assertIn("unrecognised cells/ layout", run.stdout)
 
+    def test_a_lone_non_apple_cell_reports_absent(self) -> None:
+        # A single-platform Windows, Linux or wasm dispatch unpacks one zip and no records.
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary)
+            (work / "cells").mkdir()
+            (work / "cells" / "skia-build-win-arm64-gpu-release.zip").write_bytes(b"archive")
+            output, subjects, cells = self.run_listing(work)
+            self.assertIn("present=false", output)
+            self.assertEqual((subjects, cells), ("", ""))
+
+    def test_lone_records_without_their_archive_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary)
+            make_cell(work / "cells", "skia-build-mac-universal-gpu-release")
+            (work / "cells" / "skia-build-mac-universal-gpu-release.zip").unlink()
+            env = {**os.environ, "GITHUB_OUTPUT": str(work / "out"), "GITHUB_STEP_SUMMARY": str(work / "sum")}
+            run = subprocess.run(["bash", "-c", listing_script()], cwd=work, env=env,
+                                 capture_output=True, text=True)
+            self.assertNotEqual(run.returncode, 0)
+
     def test_no_apple_cell_reports_absent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             work = Path(temporary)

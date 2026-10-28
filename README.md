@@ -250,7 +250,7 @@ Skia/Dawn, only V8, or both.
 # Build all platforms and create release
 gh workflow run build-skia.yml
 
-# Build specific platform(s) without creating a release
+# Build specific platform(s) without creating a release. Use this for recovery or validation of a failed matrix cell; do not rerun `all` for an isolated platform failure.
 gh workflow run build-skia.yml -f platforms=visionos -f skip_release=true
 gh workflow run build-skia.yml -f platforms=mac,ios -f skip_release=true
 gh workflow run build-skia.yml -f platforms=win -f skip_release=true
@@ -261,6 +261,8 @@ gh workflow run build-skia.yml -f skia_branch=chrome/m152
 # Retry Apple builds on the Intel macOS runner if GitHub's M1 runners are stalled
 gh workflow run build-skia.yml -f skia_branch=chrome/m152 -f platforms=all -f apple_runner=macos-15-intel
 ```
+
+When a matrix job fails, inspect that job first and rerun only its platform with `skip_release=true` (for example, `platforms=visionos`). A targeted run does not publish a partial release. After every required platform has passed, run one `platforms=all` build to assemble the XCFramework and publish the release. This keeps completed platform builds out of routine recovery runs while preserving a single complete release gate.
 
 ### Automatic Skia Updates
 

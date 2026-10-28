@@ -217,6 +217,16 @@ class LegalManifestTests(unittest.TestCase):
         return manifest_tool.build_manifest(archive, graph, {"platform": "mac"}, gn=None,
                                             expected_revisions=expected)
 
+    def test_object_name_fallback_maps_arm64e_to_architecture_variant_output(self):
+        graph = manifest_tool.BuildGraph(self.src, {"arm64": self.out}, "ninja",
+                                         builder_root=self.builder,
+                                         toolchain_roots=manifest_tool.default_toolchain_roots())
+        graph.index()
+        matches = graph.match_object(b"arm64e object bytes", "libskia.core.o", "arm64e")
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0][0], "arm64")
+        self.assertTrue(graph.sources[manifest_tool.os.path.realpath(matches[0][1])])
+
     def test_records_the_exact_skia_and_dawn_checkouts(self):
         manifest = self.manifest(self.package(), expected=dict(self.commits))
         self.assertEqual(manifest["gaps"], [])

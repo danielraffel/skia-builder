@@ -396,6 +396,19 @@ class ToolchainReceiptTests(unittest.TestCase):
         problems = receipt_tool.validate_receipt(self.receipt(sdk_version="26.0"), self.archive)
         self.assertTrue(any("built against SDK(s) ['15.5']" in p for p in problems), problems)
 
+    def test_receipt_can_allow_a_known_cross_sdk_archive_member(self):
+        receipt = self.receipt()
+        receipt["sdk"]["compatible_versions"] = ["18.5"]
+        receipt["observed_macho"]["sdk_versions"] = ["15.5", "18.5"]
+        self.assertEqual(receipt_tool.validate_receipt(receipt), [])
+
+    def test_receipt_rejects_an_unlisted_cross_sdk_archive_member(self):
+        receipt = self.receipt()
+        receipt["sdk"]["compatible_versions"] = ["18.5"]
+        receipt["observed_macho"]["sdk_versions"] = ["15.5", "26.0"]
+        problems = receipt_tool.validate_receipt(receipt)
+        self.assertTrue(any("receipt allows" in problem for problem in problems), problems)
+
     def test_unknown_compiler_banner_is_refused(self):
         problems = receipt_tool.validate_receipt(self.receipt(clang_banner="error: exit 1"))
         self.assertTrue(any("compiler.c.version" in p for p in problems), problems)

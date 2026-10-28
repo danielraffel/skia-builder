@@ -67,6 +67,7 @@ TARGET_TRIPLES = {
 }
 SDK_NAMES = {"mac": "macosx", "ios": "iphoneos", "visionos": "xros"}
 SIMULATOR_SDK_NAMES = {"ios": "iphonesimulator", "visionos": "xrsimulator"}
+SDK_VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)*$")
 
 Runner = Callable[[list[str]], subprocess.CompletedProcess]
 
@@ -203,6 +204,16 @@ def build_receipt(platform_name: str, archs: list[str], configuration: str, vari
     simulator = target == "simulator"
     sdk = (SIMULATOR_SDK_NAMES if simulator else SDK_NAMES).get(platform_name, "macosx")
     sysroot = probe.out(["xcrun", "--sdk", sdk, "--show-sdk-path"])
+    # Dawn's visionOS CMake build currently compiles some support objects with
+    # the matching iOS SDK. Record the versions shipped by this Xcode so the
+    # archive check can accept that deliberate cross-SDK composition while
+    # still rejecting an object built against an unrelated SDK.
+    compatible_sdk_versions: list[str] = []
+    if platform_name == "visionos":
+        for compatible_sdk in ("iphoneos", "iphonesimulator"):
+            version = probe.out(["xcrun", "--sdk", compatible_sdk, "--show-sdk-version"])
+            if SDK_VERSION_RE.fullmatch(version) and version not in compatible_sdk_versions:
+                compatible_sdk_versions.append(version)
     clang = probe.tool("clang", ["--version"], sdk=sdk)
     clangxx = probe.tool("clang++", ["--version"], sdk=sdk)
     libcxx_tbd = Path(sysroot) / "usr" / "lib" / "libc++.tbd"
@@ -248,6 +259,7 @@ def build_receipt(platform_name: str, archs: list[str], configuration: str, vari
             "version": probe.out(["xcrun", "--sdk", sdk, "--show-sdk-version"]),
             "build_version": probe.out(["xcrun", "--sdk", sdk, "--show-sdk-build-version"]),
             "libcxx_tbd_sha256": probe.digest(libcxx_tbd),
+            "compatible_versions": compatible_sdk_versions,
         },
         "cpp_abi": abi,
         "ccache": ccache_state(probe),
@@ -316,9 +328,11 @@ def validate_receipt(receipt: dict, archive: Path | None = None) -> list[str]:
     sdk = receipt.get("sdk") or {}
     observed = receipt.get("observed_macho")
     if observed is not None:
-        if observed.get("sdk_versions") != [sdk.get("version")]:
+        allowed_sdk_versions = [sdk.get("version"), *(sdk.get("compatible_versions") or [])]
+        if any(version not in allowed_sdk_versions for version in observed.get("sdk_versions", [])) \
+                or sdk.get("version") not in observed.get("sdk_versions", []):
             problems.append(f"objects were built against SDK(s) {observed.get('sdk_versions')}, "
-                            f"receipt names {sdk.get('version')!r}")
+                            f"receipt allows {allowed_sdk_versions!r}")
         if observed.get("members_without_build_version"):
             problems.append(f"{observed['members_without_build_version']} object member(s) "
                             "carry no LC_BUILD_VERSION")

@@ -92,7 +92,8 @@ ${failed_jobs}
 
 1. Inspect the failed or stalled jobs and logs.
 2. Make the smallest repository change needed to restore the \`${skia_branch}\` build.
-3. Let the normal \`Build Skia\` workflow publish the release after the fix merges.
+3. Re-run only the failed platform with \`Build Skia\` and \`skip_release=true\` (for example, \`-f platforms=visionos\`). Do not dispatch \`platforms=all\` for an isolated matrix failure.
+4. Let one complete \`platforms=all\` run publish the release after every required platform passes.
 
 EOF
 }
@@ -114,7 +115,7 @@ Detection reason: \`${FAILURE_REASON}\`
 Failed or stalled jobs:
 ${failed_jobs}
 
-Please focus on the failing or stalled jobs, make the smallest repo change needed, and push the fix to this PR branch. If the workflow is still running, inspect completed failed jobs through the GitHub REST job-log endpoint because \`gh run view --log-failed\` may wait for the whole workflow to complete. If the only blocker is stale queued \`macos-15\` jobs, cancel the stale release run before retrying with \`-f apple_runner=macos-15-intel\` to avoid duplicate release publishers. Do not publish a release manually.
+Please focus on the failing or stalled jobs, make the smallest repo change needed, and push the fix to this PR branch. If the workflow is still running, inspect completed failed jobs through the GitHub REST job-log endpoint because \`gh run view --log-failed\` may wait for the whole workflow to complete. Retry only the affected platform with \`skip_release=true\`; reserve \`platforms=all\` for the final complete release run. If the only blocker is stale queued \`macos-15\` jobs, cancel the stale release run before retrying with \`-f apple_runner=macos-15-intel\` to avoid duplicate release publishers. Do not publish a release manually.
 EOF
 }
 

@@ -323,6 +323,11 @@ PLATFORM_GN_ARGS = {
     skia_enable_skshaper = true
     """,
 
+    # skia_use_partition_alloc: Skia's standalone clang build compiles raw_ptr
+    # against PartitionAlloc with BackupRefPtr on, and the libraries packaged
+    # here do not include its RawPtrBackupRefImpl, so consumers fail to link
+    # (tools/check_linux_archive.py). Off, raw_ptr is a plain pointer. Apple
+    # clang builds already leave BackupRefPtr off.
     "linux": """
     skia_use_vulkan = true
     skia_use_dawn = true
@@ -331,6 +336,7 @@ PLATFORM_GN_ARGS = {
     skia_use_freetype = true
     skia_use_system_freetype2 = false
     extra_cflags_c = ["-Wno-error"]
+    skia_use_partition_alloc = false
     """
 }
 
@@ -420,6 +426,11 @@ PLATFORM_GN_ARGS_CPU = {
     skia_enable_skshaper = true
     """,
 
+    # skia_use_partition_alloc: Skia's standalone clang build compiles raw_ptr
+    # against PartitionAlloc with BackupRefPtr on, and the libraries packaged
+    # here do not include its RawPtrBackupRefImpl, so consumers fail to link
+    # (tools/check_linux_archive.py). Off, raw_ptr is a plain pointer. Apple
+    # clang builds already leave BackupRefPtr off.
     "linux": """
     skia_use_vulkan = false
     skia_use_dawn = false
@@ -428,6 +439,7 @@ PLATFORM_GN_ARGS_CPU = {
     skia_use_freetype = true
     skia_use_system_freetype2 = false
     extra_cflags_c = ["-Wno-error"]
+    skia_use_partition_alloc = false
     """
 }
 

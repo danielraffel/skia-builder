@@ -30,7 +30,7 @@ on:
         type: string
         default: ''
       replace_asset:
-        description: 'Deliberate rebuild only: the asset file on an existing release whose published bytes may be replaced (for example skia-build-win-arm64-gpu-release.zip). Empty refuses any change to published bytes.'
+        description: 'Deliberate rebuild only: the asset file(s) on an existing release whose published bytes may be replaced (for example skia-build-win-arm64-gpu-release.zip; the Linux backfill takes a comma-separated list). Empty refuses any change to published bytes.'
         required: false
         type: string
         default: ''
@@ -491,6 +491,11 @@ jobs:
             zip -r "$ARCHIVE" "${PACKAGE_PATHS[@]}"
           fi
 
+      - name: Check Linux archive links without BackupRefPtr
+        if: steps.check.outputs.should_build == 'true' && matrix.platform == 'linux' && !inputs.test_mode
+        shell: bash
+        run: python3 tools/check_linux_archive.py "${{ steps.archive.outputs.name }}.zip"
+
       - name: Smoke-check Windows archive
         if: steps.check.outputs.should_build == 'true' && runner.os == 'Windows' && matrix.variant == 'gpu' && !inputs.test_mode
         shell: bash
@@ -813,6 +818,9 @@ jobs:
           [ -d build/share ] && PACKAGE_PATHS+=(build/share)
           zip -r skia-build-linux-x64-gpu-release.zip "${PACKAGE_PATHS[@]}"
           ls -la skia-build-linux-x64-gpu-release.zip
+      - name: Check Linux archive links without BackupRefPtr
+        if: ${{ !inputs.test_mode }}
+        run: python3 tools/check_linux_archive.py skia-build-linux-x64-gpu-release.zip
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
@@ -1059,6 +1067,55 @@ jobs:
           fi
           python3 src/tools/release_asset_guard.py --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" \
             publish artifact/skia-build-win-arm64-gpu-release.zip ${replace[@]+"${replace[@]}"} \
+            --repin-hint "$REPIN_HINT"
+
+  # Republish the Linux archives of an existing milestone release without
+  # rebuilding or touching any other platform's assets or attestations. Each
+  # changed archive must be named in replace_asset (comma-separated) with a
+  # replace_reason; the guard records both digests in the release notes.
+  publish-linux-backfill:
+    if: ${{ !inputs.skip_release && inputs.platforms == 'linux' && inputs.release_tag != '' && github.ref == 'refs/heads/main' }}
+    needs: [build-skia, portable-linux-x64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository (release tools)
+        uses: actions/checkout@v6
+        with:
+          path: src
+      - name: Download Linux x64 artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: skia-build-linux-x64-gpu-release
+          path: artifact
+      - name: Download Linux arm64 artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: skia-build-linux-arm64-gpu-release
+          path: artifact
+      - name: Check Linux archives link without BackupRefPtr
+        run: python3 src/tools/check_linux_archive.py artifact/skia-build-linux-*-gpu-release.zip
+      - name: Publish Linux assets to existing release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          REPLACE_ASSET: ${{ inputs.replace_asset }}
+          REPLACE_REASON: ${{ inputs.replace_reason }}
+        run: |
+          set -euo pipefail
+          replace=()
+          IFS=',' read -r -a names <<< "$REPLACE_ASSET"
+          for name in "${names[@]}"; do
+            name="$(printf '%s' "$name" | tr -d '[:space:]')"
+            [ -n "$name" ] && replace+=(--allow-replace "$name")
+          done
+          if [ ${#replace[@]} -gt 0 ]; then
+            replace+=(--reason "$REPLACE_REASON")
+          fi
+          python3 src/tools/release_asset_guard.py --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" \
+            publish artifact/skia-build-linux-x64-gpu-release.zip \
+            artifact/skia-build-linux-arm64-gpu-release.zip ${replace[@]+"${replace[@]}"} \
             --repin-hint "$REPIN_HINT"
 
   trigger-matched-v8:

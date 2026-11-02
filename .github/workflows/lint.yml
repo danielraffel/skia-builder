@@ -25,6 +25,8 @@ on:
       - 'tools/release_asset_guard.py'
       - 'tools/test_release_asset_guard.py'
       - 'tools/check_windows_archive.py'
+      - 'tools/check_linux_archive.py'
+      - 'tools/test_check_linux_archive.py'
       - 'tools/test_check_windows_archive.py'
       - 'tools/write_windows_toolchain_provenance.py'
       - 'tools/test_windows_toolchain_provenance.py'
@@ -64,6 +66,8 @@ on:
       - 'tools/release_asset_guard.py'
       - 'tools/test_release_asset_guard.py'
       - 'tools/check_windows_archive.py'
+      - 'tools/check_linux_archive.py'
+      - 'tools/test_check_linux_archive.py'
       - 'tools/test_check_windows_archive.py'
       - 'tools/write_windows_toolchain_provenance.py'
       - 'tools/test_windows_toolchain_provenance.py'
@@ -134,6 +138,8 @@ jobs:
       - run: python3 tools/test_release_asset_guard.py
       - run: python3 tools/test_windows_toolchain_provenance.py
       - run: python3 tools/test_check_windows_archive.py
+      # Linux archives must link without PartitionAlloc's BackupRefPtr.
+      - run: python3 tools/test_check_linux_archive.py
       # Apple archives publish a legal manifest and toolchain receipt beside
       # them. The manifest test builds a small tree with real ninja.
       - run: sudo apt-get install -y -qq ninja-build
@@ -142,4 +148,4 @@ jobs:
       - run: python3 tools/test_attest_subjects.py
       # Only main may write to a release.
       - run: python3 tools/test_publish_ref_gate.py
-      - run: python3 -m py_compile build-skia.py patches/apply_dawn_windows_arm64_vector_stl.py tools/skia_release_lock.py tools/matched_v8_link.py tools/release_asset_guard.py tools/check_windows_archive.py tools/write_windows_toolchain_provenance.py tools/apple_archive.py tools/write_legal_manifest.py tools/write_apple_toolchain_receipt.py tools/compare_archive_members.py tools/rebind_provenance.py tools/check_rebuild_run.py
+      - run: python3 -m py_compile build-skia.py patches/apply_dawn_windows_arm64_vector_stl.py tools/skia_release_lock.py tools/matched_v8_link.py tools/release_asset_guard.py tools/check_windows_archive.py tools/check_linux_archive.py tools/write_windows_toolchain_provenance.py tools/apple_archive.py tools/write_legal_manifest.py tools/write_apple_toolchain_receipt.py tools/compare_archive_members.py tools/rebind_provenance.py tools/check_rebuild_run.py

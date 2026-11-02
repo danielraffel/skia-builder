@@ -262,6 +262,16 @@ gh workflow run build-skia.yml -f skia_branch=chrome/m152
 gh workflow run build-skia.yml -f skia_branch=chrome/m152 -f platforms=all -f apple_runner=macos-15-intel
 ```
 
+To republish only the Linux archives of an existing release (for example after a Linux-only build fix), dispatch from `main` with `platforms=linux`, `release_tag` equal to `skia_branch`, and every changed archive named in `replace_asset` (comma-separated) with a `replace_reason`. No other platform's assets or attestations are touched, and the guard records the old and new digests in the release notes:
+
+```bash
+gh workflow run build-skia.yml -f skia_branch=chrome/m158 -f release_tag=chrome/m158 -f platforms=linux \
+  -f replace_asset=skia-build-linux-x64-gpu-release.zip,skia-build-linux-arm64-gpu-release.zip \
+  -f replace_reason="..."
+```
+
+Linux archives are checked with `tools/check_linux_archive.py` before upload: no static library may reference PartitionAlloc's `RawPtrBackupRefImpl` without a definition, which is why the Linux GN args set `skia_use_partition_alloc = false`.
+
 When a matrix job fails, inspect that job first and rerun only its platform with `skip_release=true` (for example, `platforms=visionos`). A targeted run does not publish a partial release. After every required platform has passed, run one `platforms=all` build to assemble the XCFramework and publish the release. This keeps completed platform builds out of routine recovery runs while preserving a single complete release gate.
 
 ### Automatic Skia Updates

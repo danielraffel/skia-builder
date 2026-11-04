@@ -65,7 +65,7 @@ class PatchScriptPlatformTests(unittest.TestCase):
     def test_windows_still_gets_the_arm64ec_guard(self):
         # Control: the same tree, patched for Windows, does change.
         patched = self.run_patches("win").decode()
-        self.assertIn("defined(_M_X64) && !defined(_M_ARM64EC)", patched)
+        self.assertIn("defined(_M_X64)) && !defined(_M_ARM64EC)", patched)
 
 
 if __name__ == "__main__":

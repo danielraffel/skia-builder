@@ -94,6 +94,24 @@ compiler, target, runtime and stage-object provenance. Require no new unresolved
 STL helpers; retain the current verified SDK closure. Do not change every
 provider archive to Clang as a shortcut.
 
+`tools/replace_windows_raster_object.py` performs the archive transformation
+with llvm-ar/llvm-lib. It refuses to overwrite an existing output, checks the
+replacement machine and complete normal SkOpts symbols, rejects x86 dispatch
+and STL helper imports, and verifies that all unrelated object bytes and names
+survive unchanged. This tool does not yet integrate compilation into
+`build-skia.py`; callers must preserve the exact provider compilation recipe.
+
+A candidate with only this member replaced linked an MSVC primitive consumer
+in the ARM64EC UTM guest without either diagnostic object. Its normal startup
+selected highp stride 4. Two renders were byte-identical to the earlier highp
+diagnostic, and differed from scalar in only six channels, each by one level.
+Lowp stages remain null under `SK_DISABLE_LOWP_RASTER_PIPELINE`; their reported
+stride is 4 in the normal object, which does not enable those null stages.
+This proves the primitive archive consumer, not final product qualification.
+Compile the probe with `/DPULP_RASTER_PROVIDER_PROBE` and invoke it as
+`raster-simd-probe-provider.exe provider output.bgra` to exercise only normal
+provider initialization, with no runtime table replacement.
+
 Qualify native ARM64 and ARM64EC independently. Intel must retain its own
 provider/runtime lane. Recheck complete dispatch-table consistency, context
 layout, callbacks, tail widths, gradients, blending, images, clipping and real

@@ -12,7 +12,9 @@
 #include "include/core/SkSurface.h"
 #include "include/effects/SkGradient.h"
 #include "src/core/SkOpts.h"
+#ifndef PULP_RASTER_PROVIDER_PROBE
 extern "C" void spectr_probe_install_neon(int enable_lowp);
+#endif
 static double cpu_seconds() {
     FILETIME creation,exit,kernel,user;
     if (!GetProcessTimes(GetCurrentProcess(),&creation,&exit,&kernel,&user)) std::exit(3);
@@ -21,11 +23,17 @@ static double cpu_seconds() {
     return (k.QuadPart+u.QuadPart)/10000000.0;
 }
 int main(int argc,char**argv) {
+#ifdef PULP_RASTER_PROVIDER_PROBE
+    if(argc!=3 || strcmp(argv[1],"provider")) return 2;
+#else
     if(argc!=3 || (strcmp(argv[1],"scalar") && strcmp(argv[1],"neon") && strcmp(argv[1],"neon-highp"))) return 2;
+#endif
     SkGraphics::Init();
     const auto original_high=SkOpts::raster_pipeline_highp_stride;
     const auto original_low=SkOpts::raster_pipeline_lowp_stride;
+#ifndef PULP_RASTER_PROVIDER_PROBE
     if(strcmp(argv[1],"scalar")) spectr_probe_install_neon(strcmp(argv[1],"neon-highp")!=0);
+#endif
     constexpr int width=1320,height=860,iterations=64;
     auto surface=SkSurfaces::Raster(SkImageInfo::MakeN32Premul(width,height));
     if(!surface)return 4;

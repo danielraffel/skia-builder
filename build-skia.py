@@ -42,6 +42,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 # Define ANSI color codes
@@ -162,6 +163,18 @@ GPU_LIBS = {
     "win": ["dawn_combined.lib"],
     "wasm": [],  # WASM uses browser WebGPU
     "linux": ["libdawn_combined.a"],
+}
+
+# Patch scripts that change sources only a Windows slice needs.  They run for
+# Windows targets only: every other platform must build, and package, Skia
+# exactly as upstream ships it.  (apply_windows_arm64ec_avx.py, for example,
+# rewrites include/private/SkFeatures.h, which every archive packages.)  Any
+# patches/apply_*.py whose name mentions Windows must be listed here; the test
+# in tools/test_patch_script_platforms.py enforces that.
+PATCH_SCRIPT_PLATFORMS = {
+    "apply_dawn_windows_arm64_vector_stl.py": {"win"},
+    "apply_skia_windows_arm64ec_archive_flags.py": {"win"},
+    "apply_windows_arm64ec_avx.py": {"win"},
 }
 
 # Directories to package
@@ -310,6 +323,11 @@ PLATFORM_GN_ARGS = {
     skia_enable_skshaper = true
     """,
 
+    # skia_use_partition_alloc: Skia's standalone clang build compiles raw_ptr
+    # against PartitionAlloc with BackupRefPtr on, and the libraries packaged
+    # here do not include its RawPtrBackupRefImpl, so consumers fail to link
+    # (tools/check_linux_archive.py). Off, raw_ptr is a plain pointer. Apple
+    # clang builds already leave BackupRefPtr off.
     "linux": """
     skia_use_vulkan = true
     skia_use_dawn = true
@@ -318,6 +336,7 @@ PLATFORM_GN_ARGS = {
     skia_use_freetype = true
     skia_use_system_freetype2 = false
     extra_cflags_c = ["-Wno-error"]
+    skia_use_partition_alloc = false
     """
 }
 
@@ -407,6 +426,11 @@ PLATFORM_GN_ARGS_CPU = {
     skia_enable_skshaper = true
     """,
 
+    # skia_use_partition_alloc: Skia's standalone clang build compiles raw_ptr
+    # against PartitionAlloc with BackupRefPtr on, and the libraries packaged
+    # here do not include its RawPtrBackupRefImpl, so consumers fail to link
+    # (tools/check_linux_archive.py). Off, raw_ptr is a plain pointer. Apple
+    # clang builds already leave BackupRefPtr off.
     "linux": """
     skia_use_vulkan = false
     skia_use_dawn = false
@@ -415,6 +439,7 @@ PLATFORM_GN_ARGS_CPU = {
     skia_use_freetype = true
     skia_use_system_freetype2 = false
     extra_cflags_c = ["-Wno-error"]
+    skia_use_partition_alloc = false
     """
 }
 
@@ -535,7 +560,23 @@ class SkiaBuildScript:
     def sync_deps(self):
         os.chdir(SKIA_SRC_DIR)
         colored_print("Syncing Deps...", Colors.OKBLUE)
-        subprocess.run([sys.executable, "tools/git-sync-deps"], check=True)
+        command = [sys.executable, "tools/git-sync-deps"]
+        # googlesource occasionally terminates a large fetch with HTTP 502 or
+        # an incomplete chunked response.  The checkout is safe to retry: the
+        # helper resumes the shallow clones and verifies each pinned revision.
+        for attempt in range(1, 4):
+            try:
+                subprocess.run(command, check=True)
+                return
+            except subprocess.CalledProcessError:
+                if attempt == 3:
+                    raise
+                delay = attempt * 10
+                colored_print(
+                    f"Dependency sync failed (attempt {attempt}/3); retrying in {delay}s...",
+                    Colors.WARNING,
+                )
+                time.sleep(delay)
 
     def stabilize_windows_arm64_dep_sync(self):
         """Make Skia's dependency checkout deterministic on Windows ARM64.
@@ -700,10 +741,15 @@ class SkiaBuildScript:
             os.environ["CFLAGS"] = f"{os.environ.get('CFLAGS', '')} {' '.join(msvc_flags)}".strip()
             os.environ["CXXFLAGS"] = f"{os.environ.get('CXXFLAGS', '')} {' '.join(msvc_flags)}".strip()
             gn_args += "extra_cflags = [" + ", ".join(f'"{flag}"' for flag in msvc_flags) + "]\n"
+            # Both pure ARM64 and ARM64EC use GN's arm64 target.  Keep the
+            # ABI distinction explicit so Dawn's CMake action can receive the
+            # same compiler/linker mode as Skia.
+            gn_args += f'skia_win_arm64ec = {"true" if arch == "arm64ec" else "false"}\n'
             if arch == "arm64ec":
                 # GN's ARM64 target selects the Windows ARM source/toolchain;
-                # this linker flag is what makes the produced archive EC.
+                # linker/archive flags make every produced library EC.
                 gn_args += 'extra_ldflags = ["/machine:ARM64EC"]\n'
+                gn_args += 'extra_arflags = ["/machine:ARM64EC"]\n'
             # Pulp consumes the Windows archives with MSVC.  Keep the
             # producer on the same STL/CRT ABI; the clang-produced ARM64
             # asset otherwise leaves __std_* symbols unresolved at link time
@@ -720,22 +766,10 @@ class SkiaBuildScript:
                 gn_args += "target_cpu = \"x86\"\n"
             else:  # x64
                 gn_args += "target_cpu = \"x64\"\n"
-            # Find Clang installation - prefer standalone LLVM, fallback to VS bundled
-            clang_paths = [
-                "C:\\Program Files\\LLVM",
-                "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\VC\\Tools\\Llvm\\x64",
-                "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\Llvm\\x64",
-                "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Tools\\Llvm\\x64",
-            ]
-            clang_win = None
-            for path in clang_paths:
-                if os.path.isdir(path):
-                    clang_win = path
-                    break
-            if clang_win:
-                gn_args += f"clang_win = \"{clang_win}\"\n"
-            else:
-                colored_print("Warning: Clang/LLVM not found - build may fail", Colors.WARNING)
+            # Do not set clang_win here.  Skia's Windows toolchain selects
+            # clang-cl whenever clang_win is non-empty, even when is_clang is
+            # false.  ARM64EC must use the MSVC cl.exe toolchain so the Dawn
+            # archive and the provenance receipt describe the same producer.
         elif self.platform == "linux":
             gn_args += f"target_cpu = \"{'arm64' if arch == 'arm64' else 'x64'}\"\n"
         elif self.platform == "wasm":
@@ -1197,6 +1231,9 @@ class SkiaBuildScript:
         if self.revision:
             subprocess.run(["git", "fetch", "--depth", "1", "origin", self.revision], check=True)
             subprocess.run(["git", "checkout", "--detach", self.revision], check=True)
+            # A cached checkout keeps edits a previous run's patches made to
+            # tracked files; start every build from the pinned tree.
+            subprocess.run(["git", "reset", "--hard", self.revision], check=True)
         else:
             subprocess.run(["git", "checkout", self.branch], check=True)
             subprocess.run(["git", "reset", "--hard", f"origin/{self.branch}"], check=True)
@@ -1264,12 +1301,31 @@ class SkiaBuildScript:
         else:
             gn_args = BASIC_GN_ARGS + PLATFORM_GN_ARGS[self.platform]
         gn_args += RELEASE_GN_ARGS
+        target_cpu = arch
+        if self.platform == "win":
+            # ARM64EC uses GN's ARM64 source/toolchain selection.  The EC ABI
+            # is selected by the explicit compiler/linker flags below and the
+            # custom arg consumed by Skia's Dawn BUILD.gn action.
+            target_cpu, msvc_flags = windows_arch_gn_settings(
+                arch, '/MTd' if self.config == 'Debug' else '/MT')
         gn_args += f"""
         is_debug = {"true" if self.config == 'Debug' else "false"}
         is_official_build = {"false" if self.config == 'Debug' else "true"}
-        target_cpu = "{arch}"
+        target_cpu = "{target_cpu}"
         variant = "{self.variant}"
         """
+        if self.platform == "win":
+            gn_args += "\n".join([
+                "is_clang = false",
+                'cc = "cl.exe"',
+                'cxx = "cl.exe"',
+                "extra_cflags = [" + ", ".join(f'\"{flag}\"' for flag in msvc_flags) + "]",
+                "skia_win_arm64ec = " + ("true" if arch == "arm64ec" else "false"),
+                *( ["extra_ldflags = [\"/machine:ARM64EC\"]"]
+                  if arch == "arm64ec" else []),
+                *( ["extra_arflags = [\"/machine:ARM64EC\"]"]
+                  if arch == "arm64ec" else []),
+            ]) + "\n"
         # Remove leading whitespace from each line while preserving structure
         lines = [line.strip() for line in gn_args.strip().splitlines()]
         return '\n'.join(line for line in lines if line)
@@ -1381,6 +1437,11 @@ class SkiaBuildScript:
 
         # Apply Python patch scripts (for complex patches that can't use git diff)
         for patch_script in sorted(patches_dir.glob("apply_*.py")):
+            platforms = PATCH_SCRIPT_PLATFORMS.get(patch_script.name)
+            if platforms is not None and self.platform not in platforms:
+                colored_print(f"Skipping patch script {patch_script.name} "
+                              f"(only for {', '.join(sorted(platforms))})", Colors.OKCYAN)
+                continue
             colored_print(f"Running patch script: {patch_script.name}", Colors.OKBLUE)
             try:
                 subprocess.run([sys.executable, str(patch_script), str(SKIA_SRC_DIR)], check=True)

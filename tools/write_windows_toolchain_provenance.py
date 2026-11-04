@@ -27,7 +27,6 @@ import json
 import os
 import platform
 import re
-import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -36,18 +35,24 @@ from typing import Callable
 TOOLSET_RE = re.compile(r"^[0-9]{2}\.[0-9]{2}\.[0-9]{5}$")
 SDK_RE = re.compile(r"^[0-9]{2}\.[0-9]\.[0-9]{5}\.[0-9]$")
 CL_BANNER_RE = re.compile(r"C/C\+\+ Optimizing Compiler Version [0-9]+\.[0-9]+\.[0-9]+")
-CLANG_RE = re.compile(r"clang version [0-9]+\.[0-9]+\.[0-9]+")
 CL_PATH_RE = re.compile(
     r"([A-Za-z]:[^\"\n]*?[\\/]Tools[\\/]MSVC[\\/]([0-9]{2}\.[0-9]{2}\.[0-9]{5})"
     r"[\\/]bin[\\/]Host[A-Za-z0-9]+[\\/][A-Za-z0-9]+[\\/]cl\.exe)", re.IGNORECASE)
+CL_ANY_MSVC_RE = re.compile(
+    r"([A-Za-z](?:\$:|:)[^\"\r\n]*?[\\/]MSVC[\\/]"
+    r"([0-9]{2}\.[0-9]{2}\.[0-9]{5})[^\"\r\n]*?[\\/]cl\.exe)", re.IGNORECASE)
+GIT_REF_RE = re.compile(r"^[0-9a-f]{40}$")
 BAD_VALUE_RE = re.compile(r"unknown|error|no input files|not recognized|not found|cannot find",
                           re.IGNORECASE)
-GN_TARGET_CPU = {"arm64": "arm64", "x64": "x64", "x86_64": "x64", "win32": "x86", "x86": "x86"}
-GIT_REF_RE = re.compile(r"^[0-9a-f]{40}$")
+GN_TARGET_CPU = {"arm64": "arm64", "arm64ec": "arm64", "x64": "x64", "x86_64": "x64", "win32": "x86", "x86": "x86"}
 DEFAULT_WIN_SDK = r"C:\Program Files (x86)\Windows Kits\10"
-DEFAULT_CLANG_CL = r"C:\Program Files\LLVM\bin\clang-cl.exe"
 
 Runner = Callable[[list[str]], str]
+
+
+def unescape_ninja_value(value: str) -> str:
+    """Decode Ninja's literal drive-colon/space escapes only."""
+    return re.sub(r"\$([$: ])", r"\1", value)
 
 
 def _run(args: list[str]) -> str:
@@ -98,8 +103,13 @@ def cl_from_toolchain_ninja(path: Path) -> tuple[str, str] | None:
     """Return (cl.exe path, toolset) that GN wrote into toolchain.ninja."""
     if not path.is_file():
         return None
-    match = CL_PATH_RE.search(path.read_text(encoding="utf-8", errors="replace"))
-    return (match.group(1), match.group(2)) if match else None
+    # GN/Ninja serializes Windows drive colons and spaces as `$:` and `$ `.
+    # Decode the command text before matching and handing the path to cl.exe.
+    content = unescape_ninja_value(path.read_text(encoding="utf-8", errors="replace"))
+    match = CL_PATH_RE.search(content) or CL_ANY_MSVC_RE.search(content)
+    if not match:
+        return None
+    return (match.group(1), match.group(2))
 
 
 def _first_matching_line(output: str, regex: re.Pattern) -> str:
@@ -110,12 +120,25 @@ def _first_matching_line(output: str, regex: re.Pattern) -> str:
     return output.splitlines()[0].strip() if output.strip() else "unknown"
 
 
-def resolve_clang_cl() -> str:
-    """The clang-cl Dawn's CMake sub-build uses: the workflow exports it as CC."""
-    for candidate in (os.environ.get("CC", ""), os.environ.get("CXX", "")):
-        if candidate.lower().endswith("clang-cl.exe"):
-            return candidate
-    return shutil.which("clang-cl.exe") or shutil.which("clang-cl") or DEFAULT_CLANG_CL
+def find_msvc_cl(vc_dir: Path | None, toolset: str | None, arch: str) -> Path | None:
+    """Find the MSVC compiler GN can use for a Windows target.
+
+    ARM64 GitHub images do not all expose the same host-tool directory.  The
+    ARM64EC compiler is accepted by the ARM64 cl.exe when passed `/arm64EC`,
+    so probe the explicit EC directory first and then the ordinary ARM64
+    compiler as a compatibility fallback.  Never invent a path: callers must
+    validate the resulting banner.
+    """
+    if not vc_dir or not toolset:
+        return None
+    target = GN_TARGET_CPU.get(arch.lower(), arch.lower())
+    target_dirs = ["arm64ec", target] if arch.lower() == "arm64ec" else [target]
+    for host in ("HostX64", "HostARM64"):
+        for target_dir in target_dirs:
+            candidate = vc_dir / "Tools" / "MSVC" / toolset / "bin" / host / target_dir / "cl.exe"
+            if candidate.is_file():
+                return candidate
+    return None
 
 
 def build_receipt(arch: str, configuration: str, variant: str, *,
@@ -130,13 +153,15 @@ def build_receipt(arch: str, configuration: str, variant: str, *,
     sdk_root = win_sdk or Path(os.environ.get("WindowsSdkDir", "").rstrip("\\/") or DEFAULT_WIN_SDK)
     sdk = os.environ.get("WindowsSDKVersion", "").strip("\\/ ") or highest_version_dir(
         sdk_root / "Include", SDK_RE.pattern.strip("^$"))
-    # gn/toolchain/BUILD.gn: $win_vc/Tools/MSVC/$ver/bin/HostX64/$target_cpu/cl.exe
-    cl = str(vc_dir / "Tools" / "MSVC" / toolset / "bin" / "HostX64" / target_cpu / "cl.exe") \
-        if vc_dir and toolset else "unknown"
+    # gn/toolchain/BUILD.gn normally uses HostX64; ARM images may expose only
+    # HostARM64, and ARM64EC may share the ARM64 compiler with /arm64EC.
+    cl_path = find_msvc_cl(vc_dir, toolset, arch)
+    cl = str(cl_path) if cl_path else "unknown"
     built = cl_from_toolchain_ninja(toolchain_ninja) if toolchain_ninja else None
     if built:
         cl, toolset = built
-    clang = resolve_clang_cl()
+    cl_version = (_first_matching_line(run([cl]), CL_BANNER_RE)
+                  if cl != "unknown" else "unknown")
     builder_ref = (builder_ref or os.environ.get("SKIA_BUILDER_REF", "")).strip().lower()
     if builder_ref and not GIT_REF_RE.fullmatch(builder_ref):
         raise ValueError("builder_ref must be a 40-character lowercase git commit")
@@ -148,22 +173,21 @@ def build_receipt(arch: str, configuration: str, variant: str, *,
             "skia_gn_compiler": {
                 "driver": "cl.exe", "path": cl,
                 # cl.exe prints its banner to stderr when run without arguments.
-                "version": _first_matching_line(run([cl]), CL_BANNER_RE) if cl != "unknown"
-                else "unknown",
+                "version": cl_version,
                 "source": "toolchain.ninja" if built else "gn find_msvc resolution",
             },
             "dawn_cmake_compiler": {
-                "driver": "clang-cl.exe", "path": clang,
-                "version": _first_matching_line(run([clang, "--version"]), CLANG_RE),
+                # build-skia.py deliberately sets CC/CXX=cl.exe and
+                # is_clang=false. Dawn's separate CMake sub-build therefore
+                # uses the same MSVC compiler and CRT as Skia.
+                "driver": "cl.exe", "path": cl,
+                "version": cl_version,
+                "source": "build-skia.py MSVC ABI",
             },
             "msvc_toolset_version": toolset or "unknown",
             "windows_sdk_version": sdk or "unknown",
             "visual_studio_vc_dir": str(vc_dir) if vc_dir else "unknown",
             "host_architecture": platform.machine(),
-            # The archive may be consumed from an explicit provider directory,
-            # where VERSION.md is absent. Keep the producer identity beside
-            # the toolchain receipt so consumers can bind it without guessing
-            # from their own checkout.
             "skia_builder_ref": builder_ref or None,
         },
         "runtime": {
@@ -215,10 +239,13 @@ def validate_receipt(receipt: dict, expect_arch: str | None = None,
     toolset = str(producer.get("msvc_toolset_version", ""))
     if toolset and toolset not in str(cl.get("path", "")):
         problems.append(f"skia_gn_compiler.path {cl.get('path')!r} is not from toolset {toolset}")
-    clang = producer.get("dawn_cmake_compiler") or {}
-    if not CLANG_RE.search(str(clang.get("version", ""))):
-        problems.append(f"dawn_cmake_compiler.version {clang.get('version')!r} "
-                        "is not a clang version line")
+    dawn = producer.get("dawn_cmake_compiler") or {}
+    if not CL_BANNER_RE.search(str(dawn.get("version", ""))):
+        problems.append(f"dawn_cmake_compiler.version {dawn.get('version')!r} "
+                        "is not a cl.exe banner")
+    if toolset and toolset not in str(dawn.get("path", "")):
+        problems.append(f"dawn_cmake_compiler.path {dawn.get('path')!r} "
+                        f"is not from toolset {toolset}")
     if expect_arch and str(target.get("architecture", "")).lower() != expect_arch.lower():
         problems.append(f"target.architecture {target.get('architecture')!r} != {expect_arch!r}")
     if expect_config and str(target.get("configuration", "")).lower() != expect_config.lower():

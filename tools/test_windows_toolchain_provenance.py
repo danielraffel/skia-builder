@@ -46,7 +46,12 @@ class Layout:
     def __init__(self, root: pathlib.Path):
         self.vc = root / "VS" / "18" / "Enterprise" / "VC"
         for version in ("14.44.35207", TOOLSET, "not-a-version"):
-            (self.vc / "Tools" / "MSVC" / version).mkdir(parents=True)
+            toolset = self.vc / "Tools" / "MSVC" / version
+            toolset.mkdir(parents=True)
+            if version == TOOLSET:
+                compiler = toolset / "bin" / "HostX64" / "arm64" / "cl.exe"
+                compiler.parent.mkdir(parents=True)
+                compiler.write_text("")
         self.sdk = root / "Windows Kits" / "10"
         for version in ("10.0.22621.0", SDK, "wdf"):
             (self.sdk / "Include" / version).mkdir(parents=True)
@@ -85,16 +90,28 @@ class WindowsToolchainProvenanceTests(unittest.TestCase):
         self.assertTrue(producer["skia_gn_compiler"]["path"].endswith(
             os.path.join("MSVC", TOOLSET, "bin", "HostX64", "arm64", "cl.exe")))
         self.assertEqual(producer["skia_gn_compiler"]["version"], CL_BANNER)
-        self.assertEqual(producer["dawn_cmake_compiler"]["version"], "clang version 20.1.0")
-        self.assertEqual(receipt["runtime"]["compile_flag"], "/MT")
-        self.assertIn(TOOLSET, receipt["runtime"]["consumer_requirement"])
+        self.assertEqual(producer["dawn_cmake_compiler"]["version"], CL_BANNER)
+        self.assertEqual(producer["dawn_cmake_compiler"]["driver"], "cl.exe")
+        self.assertIn(os.path.join("MSVC", TOOLSET), producer["dawn_cmake_compiler"]["path"])
         self.assertEqual(producer["skia_builder_ref"],
                          "e22740ed2852ebb3d5a801d6ac48b39788ed18bb")
+        self.assertEqual(receipt["runtime"]["compile_flag"], "/MT")
+        self.assertIn(TOOLSET, receipt["runtime"]["consumer_requirement"])
         self.assertEqual(MODULE.validate_receipt(receipt, "arm64", "Release"), [])
 
     def test_invalid_builder_ref_is_rejected(self):
         with self.assertRaises(ValueError):
             self.receipt(builder_ref="not-a-commit")
+
+    def test_arm64ec_uses_arm64_compiler_with_explicit_target_architecture(self):
+        receipt = MODULE.build_receipt("arm64ec", "Release", "gpu", vc_dir=self.layout.vc,
+                                       win_sdk=self.layout.sdk,
+                                       builder_ref="e22740ed2852ebb3d5a801d6ac48b39788ed18bb",
+                                       run=fake_run)
+        self.assertEqual(receipt["target"]["architecture"], "arm64ec")
+        self.assertTrue(receipt["producer"]["skia_gn_compiler"]["path"].endswith(
+            os.path.join("HostX64", "arm64", "cl.exe")))
+        self.assertEqual(MODULE.validate_receipt(receipt, "arm64ec", "Release"), [])
 
     def test_unresolvable_toolchain_fails_validation(self):
         receipt = MODULE.build_receipt("arm64", "Release", "gpu", vc_dir=self.tmp / "missing",
@@ -121,6 +138,34 @@ class WindowsToolchainProvenanceTests(unittest.TestCase):
         self.assertEqual(producer["msvc_toolset_version"], "14.44.35207")
         self.assertEqual(producer["skia_gn_compiler"]["source"], "toolchain.ninja")
         self.assertIn("14.44.35207", producer["skia_gn_compiler"]["path"])
+
+    def test_toolchain_ninja_unescapes_windows_drive_colon(self):
+        ninja = self.tmp / "toolchain.ninja"
+        ninja.write_text(
+            'rule cxx\n  command = "C$:/Program Files/Microsoft Visual Studio/18/Enterprise/'
+            'VC/Tools/MSVC/14.44.35207/bin/HostX64/arm64/cl.exe" /nologo\n')
+        receipt = self.receipt(toolchain_ninja=ninja)
+        self.assertEqual(receipt["producer"]["msvc_toolset_version"], "14.44.35207")
+        self.assertEqual(receipt["producer"]["skia_gn_compiler"]["path"].split(":", 1)[0], "C")
+
+    def test_toolchain_ninja_decodes_ninja_space_escapes(self):
+        ninja = self.tmp / "toolchain-spaces.ninja"
+        ninja.write_text(
+            'rule cxx\n  command = C$:/Program$ Files/Microsoft$ Visual$ Studio/18/'
+            'Enterprise/VC/Tools/MSVC/14.44.35207/bin/HostX64/arm64/cl.exe\n')
+        built = MODULE.cl_from_toolchain_ninja(ninja)
+        self.assertIsNotNone(built)
+        assert built
+        self.assertIn("Program Files/Microsoft Visual Studio", built[0])
+
+    def test_toolchain_ninja_accepts_msvc_path_without_tools_anchor(self):
+        ninja = self.tmp / "toolchain-fallback.ninja"
+        ninja.write_text(
+            'rule cxx\n  command = "C$:/VS/MSVC/14.44.35207/bin/HostARM64/arm64/cl.exe"\n')
+        built = MODULE.cl_from_toolchain_ninja(ninja)
+        self.assertIsNotNone(built)
+        assert built
+        self.assertEqual(built[1], "14.44.35207")
 
     def test_wrong_architecture_is_rejected(self):
         problems = MODULE.validate_receipt(self.receipt(), "x64", "Release")

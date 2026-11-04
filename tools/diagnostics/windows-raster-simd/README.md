@@ -50,13 +50,24 @@ Compile `probe_neon_opts.cpp` using clang-cl targeting `arm64ec-pc-windows-msvc`
 Inspect COFF machine identity and all undefined symbols before linking. The
 measured leaf object was ARM64EC `0xA641` and introduced no `__std_*` references.
 
-Unmodified EC compilation currently fails because the header spells its narrow
+Raw upstream EC compilation fails because the header spells its narrow
 stage ABI `__vectorcall`, which this clang-cl EC target rejects. The experiment
 used **`/D__vectorcall=`**, recorded explicitly, for the diagnostic TU only.
 This is not an approved production flag. Native ARM64 clang-cl compilation
-succeeded without that override. A source-local ARM64EC ABI branch requires
-review and testing before a production integration; do not globally redefine
-language keywords in a provider or a consumer.
+succeeded without that override. The producer already carries a source-local
+ARM64EC ABI branch in `patches/apply_windows_arm64ec_avx.py`; the diagnostic used
+raw upstream headers without that patch. Production compilation must use the
+existing source patch, never a global redefinition of a language keyword.
+
+The producer's original CPU feature patch had a separate precedence defect:
+`!defined(_M_ARM64EC)` excluded only `_M_X64`, leaving clang-cl's simultaneous
+`__x86_64__` definition able to select x86 dispatch. The corrected patch groups
+the entire x86 disjunction and migrates already-patched sources idempotently.
+The regression test preprocesses native ARM64, ARM64EC, x64 and x86 macro sets,
+including the actual clang-cl EC combination. With both source guards applied,
+the full `src/core/SkOpts.cpp` compiles as COFF ARM64EC without a keyword override,
+without `Init_ml3` or `SkCpu::gCachedFeatures` imports, and without `__std_*`
+imports. This is object-level evidence; archive/link/runtime proof is pending.
 
 Run separate invocations of `raster-simd-probe.exe scalar scalar.bgra`, then
 `neon-highp highp.bgra`, and repeat in that order. `neon` additionally installs
@@ -74,8 +85,11 @@ file diagnostics or builds ran on the VM host during timing.
 ## Production follow-up
 
 Keep MSVC as the producer of the provider's STL/CRT-facing code. Implement the
-optimized stage leaf in the provider build, using an explicit source-level EC
-ABI branch and a reviewed initialization hook. Carry immutable source,
+single `src/core/SkOpts.cpp` translation unit with clang-cl in the provider build,
+reusing the existing source-level EC ABI branch. Keep its normal initialization
+and replace only that member in the archive, rather than injecting dispatch
+tables at runtime. Initially retain `SK_DISABLE_LOWP_RASTER_PIPELINE` to match
+the measured highp precision experiment. Carry immutable source,
 compiler, target, runtime and stage-object provenance. Require no new unresolved
 STL helpers; retain the current verified SDK closure. Do not change every
 provider archive to Clang as a shortcut.

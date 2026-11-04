@@ -77,7 +77,8 @@ def recipe(rows: list[dict], source: Path, arch: str, compiler: Path,
     while i < len(args):
         arg = args[i]
         low = arg.lower()
-        if (arg.startswith('@') or low.startswith(('/yu', '/yc', '/fp', '--target', '-target'))
+        if (arg.startswith('@') or low.startswith(('/yu', '/yc', '--target', '-target'))
+                or (low.startswith('/fp') and not low.startswith('/fp:'))
                 or '__vectorcall' in low or arg in ('&&', '||', '&', '|')):
             raise ValueError(f'unsupported raster recipe argument: {arg}')
         if low.startswith(('/fo', '/fd')):

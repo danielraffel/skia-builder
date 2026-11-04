@@ -4,6 +4,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+import subprocess
 from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location('build_skia', Path(__file__).parents[1] / 'build-skia.py')
@@ -31,6 +32,20 @@ class IntegrationTests(unittest.TestCase):
             self.assertEqual(run.call_count, 1)
             self.assertEqual(script.vector_raster_outputs, {})
 
+    def test_vector_mode_refuses_patch_script_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'patches').mkdir()
+            (root / 'patches/apply_failure.py').write_text('raise RuntimeError()')
+            script = build_skia.SkiaBuildScript()
+            script.platform, script.windows_vector_raster = 'win', True
+            with patch.object(build_skia, '__file__', str(root / 'build-skia.py')), \
+                 patch.object(build_skia.os, 'chdir'), \
+                 patch.object(build_skia.subprocess, 'run',
+                              side_effect=subprocess.CalledProcessError(1, 'patch')), \
+                 self.assertRaises(subprocess.CalledProcessError):
+                script.apply_patches()
+
     def test_packaging_uses_candidate_and_both_receipts_preserves_scalar(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -41,7 +56,9 @@ class IntegrationTests(unittest.TestCase):
             candidate = src / 'vector/skia.lib'
             candidate.parent.mkdir()
             candidate.write_bytes(b'verified-vector')
-            for suffix in ('.compile.json', '.raster-object.json'):
+            suffixes = ('.compile.json', '.raster-object.json',
+                        '.source-inputs.json', '.source-patches.diff')
+            for suffix in suffixes:
                 candidate.with_suffix(suffix).write_text(suffix)
             script = build_skia.SkiaBuildScript()
             script.platform, script.config, script.variant = 'win', 'Release', 'cpu'
@@ -54,7 +71,7 @@ class IntegrationTests(unittest.TestCase):
             dest = root / 'packaged/Release/arm64ec/skia.lib'
             self.assertEqual(dest.read_bytes(), b'verified-vector')
             self.assertEqual(scalar.read_bytes(), b'scalar-original')
-            for suffix in ('.compile.json', '.raster-object.json'):
+            for suffix in suffixes:
                 self.assertEqual(dest.with_suffix(suffix).read_text(), suffix)
 
 

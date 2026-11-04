@@ -869,7 +869,8 @@ class SkiaBuildScript:
             if src_file.exists():
                 shutil.copy2(str(src_file), str(dest_file))
                 if lib == 'skia.lib' and arch in self.vector_raster_outputs:
-                    for suffix in ('.raster-object.json', '.compile.json'):
+                    for suffix in ('.raster-object.json', '.compile.json',
+                                   '.source-inputs.json', '.source-patches.diff'):
                         shutil.copy2(src_file.with_suffix(suffix), dest_file.with_suffix(suffix))
                 colored_print(f"Copied {lib} to {dest_dir}", Colors.OKGREEN)
                 # Strip arm64e if requested (iOS/visionOS only)
@@ -1462,6 +1463,8 @@ class SkiaBuildScript:
                 subprocess.run(["git", "apply", str(patch_file)], check=True)
                 colored_print(f"  Applied {patch_file.name} successfully.", Colors.OKGREEN)
             except subprocess.CalledProcessError as e:
+                if self.windows_vector_raster:
+                    raise
                 colored_print(f"  Warning: Failed to apply {patch_file.name}: {e}", Colors.WARNING)
 
         # Apply Python patch scripts (for complex patches that can't use git diff)
@@ -1476,6 +1479,8 @@ class SkiaBuildScript:
                 subprocess.run([sys.executable, str(patch_script), str(SKIA_SRC_DIR)], check=True)
                 colored_print(f"  Ran {patch_script.name} successfully.", Colors.OKGREEN)
             except subprocess.CalledProcessError as e:
+                if self.windows_vector_raster:
+                    raise
                 colored_print(f"  Warning: Failed to run {patch_script.name}: {e}", Colors.WARNING)
 
     def run(self):

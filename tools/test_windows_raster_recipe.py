@@ -43,6 +43,12 @@ class RecipeTests(unittest.TestCase):
         self.assertEqual(plan['runtime'], '/MT')
         self.assertEqual(plan['arguments'].count('/MT'), 2)
 
+    def test_preserves_floating_point_modes_but_refuses_precompiled_header_output(self):
+        for flag in ['/fp:precise', '/fp:fast', '/fp:strict']:
+            self.assertIn(flag, self.plan(self.args + [flag])['arguments'])
+        with self.assertRaises(ValueError):
+            self.plan(self.args + ['/Fpobject.pch'])
+
     def test_preserves_the_producers_known_ccache_wrapper(self):
         cache = str(Path('ccache.exe').resolve())
         with patch('windows_raster_recipe.shutil.which', return_value=cache):

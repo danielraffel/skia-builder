@@ -137,6 +137,21 @@ tracked patch digest, compiler hash/version, original compile recipe, object
 and archive hashes, CRT and architecture. It explicitly does not grant shipping
 qualification. Earlier Homebrew LLVM 23.1.3 results cannot qualify LLVM 20.1.0.
 
+Vector mode stops on a patch failure. The leaf step additionally checks the
+actual ARM64EC ABI and feature guards, fingerprints every tracked Skia
+`include`/`src` file, rejects unexpected files (including ignored headers), and
+preserves the complete tracked patch diff plus producer patch-script identities.
+It checks that those source inputs stay unchanged during compilation. The
+packaged source manifest explicitly excludes system and external headers.
+
+All four LLVM tools are hashed. Compiler, ar and nm must report the pinned
+version; lib must be the byte-identical ar/lib multicall executable from the
+official package. `llvm-lib --version` is not version evidence: LLVM 20 ignores
+that argument and exits zero. Finally, the tool compares undefined symbols in
+the complete original/candidate archives, rejects new STL/x86 dispatch imports,
+and records other additions/removals for the mandatory consumer-link check.
+Existing MSVC STL imports in the unchanged provider are retained.
+
 The same archive subsequently linked Spectr's standalone, VST3 and CLAP targets.
 Four standalone traces exercised live noise, 64 bands, LFO modulation and 38
 mouse moves per run with the diagnostic startup archive removed. CPU mean frame

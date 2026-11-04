@@ -37,6 +37,11 @@ class RecipeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.plan(arch='arm64')
 
+    def test_repeated_identical_crt_does_not_become_a_false_conflict(self):
+        plan = self.plan(self.args + ['/MT', '/arm64EC'])
+        self.assertEqual(plan['runtime'], '/MT')
+        self.assertEqual(plan['arguments'].count('/MT'), 2)
+
     def test_refuses_runtime_keyword_wrapper_response_pch_and_source_drift(self):
         variants = [self.args + [flag] for flag in
                     ['/MD', '/D__vectorcall=', '@input.rsp', '/Yupch.h',

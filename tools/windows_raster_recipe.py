@@ -94,7 +94,8 @@ def recipe(rows: list[dict], source: Path, arch: str, compiler: Path,
         else:
             flags.append(arg)
         i += 1
-    if sources != 1 or len(runtime) != 1 or ec != (1 if arch == 'arm64ec' else 0):
+    if (sources != 1 or len({r.lower() for r in runtime}) != 1
+            or bool(ec) != (arch == 'arm64ec')):
         raise ValueError('source, CRT or ARM64EC mode disagrees with provider recipe')
     if any('SK_DISABLE_LOWP_RASTER_PIPELINE' in a for a in flags):
         raise ValueError('lowp configuration must be owned by the raster producer step')

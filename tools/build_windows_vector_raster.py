@@ -75,6 +75,8 @@ def archive_import_delta(original: Path, candidate: Path, nm: str) -> dict:
         text = subprocess.check_output([nm, '--undefined-only', '-j', str(path)], text=True)
         return {s.strip() for s in text.splitlines() if s.strip() and not s.strip().endswith(':')}
     before, after = imports(original), imports(candidate)
+    if not before or not after:
+        raise ValueError('final archive import audit requires positive symbol evidence')
     added = sorted(after - before)
     if any(any(marker in symbol for marker in ('__std_', 'Init_ml3', 'Init_ml4', 'gCachedFeatures'))
            for symbol in added):

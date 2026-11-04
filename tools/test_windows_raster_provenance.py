@@ -64,6 +64,11 @@ class ProvenanceTests(unittest.TestCase):
                        side_effect=['memcpy\n', 'memcpy\n'+symbol+'\n']), self.assertRaises(ValueError):
                 archive_import_delta(Path('old.lib'), Path('new.lib'), 'llvm-nm')
 
+    def test_empty_symbol_audit_is_not_a_success(self):
+        with patch('build_windows_vector_raster.subprocess.check_output',
+                   side_effect=['old.obj:\n', 'new.obj:\n']), self.assertRaises(ValueError):
+            archive_import_delta(Path('old.lib'), Path('new.lib'), 'llvm-nm')
+
 
 if __name__ == '__main__':
     unittest.main()

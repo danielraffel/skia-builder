@@ -39,7 +39,8 @@ class RecipeTests(unittest.TestCase):
             self.plan(arch='arm64')
 
     def test_compiler_headers_do_not_shadow_clang_intrinsics(self):
-        for include in (['-IC:/VS/VC/include'], ['/I', r'c:\VS\VC\include']):
+        for include in (['-IC:/VS/VC/include'], ['/I', r'c:\VS\VC\include'],
+                        ['/ic:/vs/vc/INCLUDE'], ['/i', 'C:/VS/VC/include']):
             result = self.plan(self.args + include + ['-IC:/SDK/ucrt', '-Iproject/include'])
             argv = result['arguments']
             index = argv.index('-imsvc')

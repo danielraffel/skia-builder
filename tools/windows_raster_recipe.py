@@ -99,12 +99,12 @@ def recipe(rows: list[dict], source: Path, arch: str, compiler: Path,
                     raise ValueError('missing compiler output argument')
         elif low in ('/showincludes', '/fs', '/mp', '/c'):
             pass
-        elif arg in ('/I', '-I'):
+        elif low in ('/i', '-i'):
             i += 1
             if i >= len(args):
                 raise ValueError('missing include directory')
             flags.extend(include_flags(arg, args[i]))
-        elif arg.startswith(('/I', '-I')):
+        elif low.startswith(('/i', '-i')):
             flags.extend(include_flags(arg[:2], arg[2:]))
         elif low == '/arm64ec':
             ec += 1

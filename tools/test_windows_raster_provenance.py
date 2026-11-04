@@ -44,7 +44,10 @@ class ProvenanceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'guard missing'):
                 source_manifest(p)
             (p / names[0]).write_text('#if (defined(__i386) || defined(_M_IX86) ||  defined(__x86_64__) || defined(_M_X64)) && !defined(_M_ARM64EC)')
-            (p / names[1]).write_text('#elif defined(_MSC_VER) && !defined(_M_ARM64EC)')
+            # Real Skia headers contain UTF-8 comments. Windows' default cp1252
+            # cannot decode byte 0x81 in this comment and must not be used.
+            (p / names[1]).write_text(
+                '#elif defined(_MSC_VER) && !defined(_M_ARM64EC)\n// \u2041', encoding='utf-8')
             with patch('build_windows_vector_raster.subprocess.check_output',
                        return_value=('\0'.join(names)+'\0').encode()):
                 before = source_manifest(p)

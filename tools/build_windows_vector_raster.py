@@ -46,7 +46,7 @@ def source_manifest(source_dir: Path) -> dict:
         'src/opts/SkRasterPipeline_opts.h': '#elif defined(_MSC_VER) && !defined(_M_ARM64EC)',
     }
     for name, anchor in guards.items():
-        if anchor not in (source_dir / name).read_text():
+        if anchor not in (source_dir / name).read_text(encoding='utf-8'):
             raise ValueError(f'required Windows vector ABI/source guard missing: {name}')
     tracked = subprocess.check_output(
         ['git', '-C', str(source_dir), 'ls-files', '-z', '--', 'include', 'src']).decode().split('\0')

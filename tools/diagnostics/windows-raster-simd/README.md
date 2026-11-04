@@ -122,7 +122,8 @@ python3 build-skia.py win -archs arm64ec -config Release \
 `LLVM_PATH` must identify LLVM 20.1.0, the workflow's pinned toolchain. After
 the ordinary MSVC build, the step reads Ninja's expanded compilation database,
 requires exactly one normal `SkOpts.cpp` command, and preserves its includes,
-defines, optimization, language standard and CRT. It removes only the MSVC
+defines, optimization, language standard and CRT. It preserves the known
+`ccache` wrapper when present and refuses other wrappers. It removes only the MSVC
 compiler/output/PDB selection and EC driver switch, then selects Clang's
 explicit target and the measured highp-only configuration. Unknown compiler
 wrappers, response files, PCHs, target overrides, CRT/architecture conflicts and

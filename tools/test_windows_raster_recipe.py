@@ -3,6 +3,7 @@
 import random
 import subprocess
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from windows_raster_recipe import recipe, split_windows_command
@@ -41,6 +42,15 @@ class RecipeTests(unittest.TestCase):
         plan = self.plan(self.args + ['/MT', '/arm64EC'])
         self.assertEqual(plan['runtime'], '/MT')
         self.assertEqual(plan['arguments'].count('/MT'), 2)
+
+    def test_preserves_the_producers_known_ccache_wrapper(self):
+        cache = str(Path('ccache.exe').resolve())
+        with patch('windows_raster_recipe.shutil.which', return_value=cache):
+            plan = self.plan(['ccache', *self.args])
+        self.assertEqual(plan['arguments'][0], cache)
+        self.assertEqual(plan['arguments'][1], str(Path('clang-cl').resolve()))
+        with patch('windows_raster_recipe.shutil.which', return_value=None), self.assertRaises(ValueError):
+            self.plan(['ccache', *self.args])
 
     def test_refuses_runtime_keyword_wrapper_response_pch_and_source_drift(self):
         variants = [self.args + [flag] for flag in

@@ -7,6 +7,7 @@ PCHs, target overrides and ABI keyword definitions fail closed.
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 
 
@@ -60,6 +61,13 @@ def recipe(rows: list[dict], source: Path, arch: str, compiler: Path,
         raise ValueError(f'expected one actual SkOpts.cpp compile, found {len(matches)}')
     row = matches[0]
     args = row.get('arguments') or split_windows_command(row['command'])
+    wrapper = []
+    if args and args[0].replace('\\', '/').rsplit('/', 1)[-1].lower() in ('ccache', 'ccache.exe'):
+        cache = shutil.which(args[0])
+        if not cache:
+            raise ValueError('provider ccache wrapper is not available')
+        wrapper = [str(Path(cache).resolve())]
+        args = args[1:]
     if not args or args[0].replace('\\', '/').rsplit('/', 1)[-1].lower() != 'cl.exe':
         raise ValueError('expected direct MSVC compiler; wrappers need explicit qualification')
     if args[0].replace('\\', '/').lower().split('/')[-2:-1] != ['arm64']:
@@ -99,9 +107,9 @@ def recipe(rows: list[dict], source: Path, arch: str, compiler: Path,
         raise ValueError('source, CRT or ARM64EC mode disagrees with provider recipe')
     if any('SK_DISABLE_LOWP_RASTER_PIPELINE' in a for a in flags):
         raise ValueError('lowp configuration must be owned by the raster producer step')
-    command = [str(compiler.resolve()), f'--target={arch}-pc-windows-msvc',
+    command = [*wrapper, str(compiler.resolve()), f'--target={arch}-pc-windows-msvc',
                *flags, '/DSK_DISABLE_LOWP_RASTER_PIPELINE', '/c', str(source.resolve()),
                '/Fo' + str(output.resolve())]
     return {'directory': str(cwd), 'arguments': command, 'provider_compile': row,
             'architecture': arch, 'runtime': runtime[0], 'highp_only': True,
-            'keyword_override': False}
+            'keyword_override': False, 'cache_wrapper': wrapper}

@@ -21,6 +21,14 @@ MACHINES = {"arm64": 0xAA64, "arm64ec": 0xA641}
 SPECIAL = {"/", "//", "/<ECSYMBOLS>/", "/<HYBRIDMAP>/"}
 
 
+def forbidden_raster_imports(symbols: str) -> bool:
+    """Recognize foreign CPU dispatch in decorated or demangled nm output."""
+    return bool(re.search(
+        r"__std_|gCachedFeatures|"
+        r"(?:\?Init_|SkOpts::Init_)(?:ml3|ml4|ssse3|sse41|avx|avx2|lasx)(?:@|\b)|"
+        r"\?Supports@SkCpu@@|\bSkCpu::Supports\b", symbols))
+
+
 def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -94,8 +102,8 @@ def replace(original: Path, vector: Path, output: Path, arch: str,
     if len(selected) != 1:
         raise ValueError(f"expected exactly one normal SkOpts.cpp member, found {selected}")
     undefined = subprocess.check_output([nm, "--undefined-only", str(vector)], text=True)
-    if any(symbol in undefined for symbol in ("__std_", "Init_ml3", "Init_ml4", "gCachedFeatures")):
-        raise ValueError("replacement imports STL helpers or x86 dispatch")
+    if forbidden_raster_imports(undefined):
+        raise ValueError("replacement imports STL helpers or foreign CPU dispatch")
     defined = subprocess.check_output([nm, "--defined-only", str(vector)], text=True)
     for symbol in ("ops_highp", "ops_lowp", "just_return_highp", "just_return_lowp",
                    "start_pipeline_highp", "start_pipeline_lowp",

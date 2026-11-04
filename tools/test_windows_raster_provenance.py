@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from build_windows_vector_raster import tool_manifest, source_manifest, archive_import_delta
+from replace_windows_raster_object import forbidden_raster_imports
 
 
 class ProvenanceTests(unittest.TestCase):
@@ -59,10 +60,23 @@ class ProvenanceTests(unittest.TestCase):
                                 'new.obj:\n__std_existing\nmemcpy\n__os_arm64x_check_icall\n']):
             result = archive_import_delta(Path('old.lib'), Path('new.lib'), 'llvm-nm')
             self.assertEqual(result['added'], ['__os_arm64x_check_icall'])
-        for symbol in ('__std_new_helper', '?Init_ml3@SkOpts@@', '?gCachedFeatures@SkCpu@@'):
+        for symbol in ('__std_new_helper', '?gCachedFeatures@SkCpu@@',
+                       '?Supports@SkCpu@@SA_NI@Z', 'bool SkCpu::Supports(unsigned int)',
+                       *('?'+'Init_'+name+'@SkOpts@@YAXXZ' for name in
+                         ('ml3', 'ml4', 'ssse3', 'sse41', 'avx', 'avx2', 'lasx')),
+                       'SkOpts::Init_lasx()'):
             with patch('build_windows_vector_raster.subprocess.check_output',
                        side_effect=['memcpy\n', 'memcpy\n'+symbol+'\n']), self.assertRaises(ValueError):
                 archive_import_delta(Path('old.lib'), Path('new.lib'), 'llvm-nm')
+
+    def test_dispatch_audit_does_not_reject_unrelated_symbols(self):
+        self.assertFalse(forbidden_raster_imports(
+            'memcpy\n?Supports@OtherClass@@SA_NI@Z\n?Init_avxHelper@SkOpts@@\n'
+            '__os_arm64x_check_icall\n__security_cookie'))
+        # Existing foreign dispatch in unrelated archive members is unchanged.
+        with patch('build_windows_vector_raster.subprocess.check_output',
+                   side_effect=['?Init_avx2@SkOpts@@\n', '?Init_avx2@SkOpts@@\nmemcpy\n']):
+            self.assertEqual(archive_import_delta(Path('a'), Path('b'), 'nm')['added'], ['memcpy'])
 
     def test_empty_symbol_audit_is_not_a_success(self):
         with patch('build_windows_vector_raster.subprocess.check_output',

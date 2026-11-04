@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import subprocess
 
-from replace_windows_raster_object import replace
+from replace_windows_raster_object import replace, forbidden_raster_imports
 from windows_raster_recipe import recipe
 
 
@@ -78,9 +78,8 @@ def archive_import_delta(original: Path, candidate: Path, nm: str) -> dict:
     if not before or not after:
         raise ValueError('final archive import audit requires positive symbol evidence')
     added = sorted(after - before)
-    if any(any(marker in symbol for marker in ('__std_', 'Init_ml3', 'Init_ml4', 'gCachedFeatures'))
-           for symbol in added):
-        raise ValueError('final archive introduces STL helpers or x86 dispatch imports')
+    if forbidden_raster_imports('\n'.join(added)):
+        raise ValueError('final archive introduces STL helpers or foreign CPU dispatch imports')
     return {'scope': 'complete final archive undefined-symbol delta; consumer link still required',
             'original_count': len(before), 'candidate_count': len(after),
             'added': added, 'removed': sorted(before - after),

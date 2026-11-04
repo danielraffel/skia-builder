@@ -112,6 +112,22 @@ Compile the probe with `/DPULP_RASTER_PROVIDER_PROBE` and invoke it as
 `raster-simd-probe-provider.exe provider output.bgra` to exercise only normal
 provider initialization, with no runtime table replacement.
 
+The same archive subsequently linked Spectr's standalone, VST3 and CLAP targets.
+Four standalone traces exercised live noise, 64 bands, LFO modulation and 38
+mouse moves per run with the diagnostic startup archive removed. CPU mean frame
+times were 50.09 / 53.77 ms (p95 79.92 / 74.25 ms); default D3D12 mean frame
+times were 416.93 / 446.34 ms. All four exited cleanly without unfinished spans
+or positive trace-loss statistics. This is standalone tracing evidence, not
+installed plugin or installer acceptance, and CPU is still below 60 Hz.
+
+The default adapter identified itself as Microsoft Basic Render Driver,
+vendor `microsoft`, architecture `warp`, yet reported type `integrated`.
+Its `gpu_acquire` span averaged 338.91 / 371.56 ms, while paint averaged
+5.48 / 5.10 ms. Do not assume an integrated adapter type implies hardware
+acceleration, or blame the frontend solely from end-to-end frame time. A Windows
+host policy for this software adapter requires separate integration, controls
+and proof; these measurements do not change the backend default themselves.
+
 Qualify native ARM64 and ARM64EC independently. Intel must retain its own
 provider/runtime lane. Recheck complete dispatch-table consistency, context
 layout, callbacks, tail widths, gradients, blending, images, clipping and real

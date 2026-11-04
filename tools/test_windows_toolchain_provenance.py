@@ -62,8 +62,10 @@ class WindowsToolchainProvenanceTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = pathlib.Path(self._tmp.name)
         self.layout = Layout(self.tmp)
+        # Windows normalizes environment keys to uppercase. Strip developer
+        # shell values case-insensitively so they cannot override this fixture.
         env = {k: v for k, v in os.environ.items()
-               if k not in ("VCToolsVersion", "WindowsSDKVersion", "WindowsSdkDir", "CC", "CXX")}
+               if k.upper() not in ("VCTOOLSVERSION", "WINDOWSSDKVERSION", "WINDOWSSDKDIR", "CC", "CXX")}
         env["CC"] = r"C:\Program Files\LLVM\bin\clang-cl.exe"
         patcher = mock.patch.dict(os.environ, env, clear=True)
         patcher.start()

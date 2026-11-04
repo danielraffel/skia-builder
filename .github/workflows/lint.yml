@@ -39,6 +39,10 @@ on:
       - 'tools/test_rebind_workflow.py'
       - 'tools/test_attest_subjects.py'
       - 'tools/test_patch_script_platforms.py'
+      - 'patches/apply_windows_arm64ec_avx.py'
+      - 'patches/test_apply_windows_arm64ec_avx.py'
+      - 'tools/replace_windows_raster_object.py'
+      - 'tools/test_replace_windows_raster_object.py'
       - 'tools/check_rebuild_run.py'
       - 'tools/testdata/**'
       - 'tools/requirements-lint.txt'
@@ -80,6 +84,10 @@ on:
       - 'tools/test_rebind_workflow.py'
       - 'tools/test_attest_subjects.py'
       - 'tools/test_patch_script_platforms.py'
+      - 'patches/apply_windows_arm64ec_avx.py'
+      - 'patches/test_apply_windows_arm64ec_avx.py'
+      - 'tools/replace_windows_raster_object.py'
+      - 'tools/test_replace_windows_raster_object.py'
       - 'tools/check_rebuild_run.py'
       - 'tools/testdata/**'
       - 'tools/requirements-lint.txt'
@@ -131,6 +139,8 @@ jobs:
       - run: python3 tools/test_skia_release_lock.py
       - run: python3 tools/test_matched_v8_link.py
       - run: python3 tools/test_windows_arch_flags.py
+      - run: python3 patches/test_apply_windows_arm64ec_avx.py
+      - run: python3 tools/test_replace_windows_raster_object.py
       # Windows-only patch scripts must not change other platforms' archives.
       - run: python3 tools/test_patch_script_platforms.py
       # Published assets are immutable unless deliberately replaced, and

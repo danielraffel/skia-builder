@@ -78,7 +78,7 @@ class WindowsToolchainProvenanceTests(unittest.TestCase):
         self.assertIn("skia_gn_compiler.version", text)
 
     def test_resolves_toolset_sdk_and_compiler_versions(self):
-        receipt = self.receipt()
+        receipt = self.receipt(builder_ref="e22740ed2852ebb3d5a801d6ac48b39788ed18bb")
         producer = receipt["producer"]
         self.assertEqual(producer["msvc_toolset_version"], TOOLSET)
         self.assertEqual(producer["windows_sdk_version"], SDK)
@@ -88,7 +88,13 @@ class WindowsToolchainProvenanceTests(unittest.TestCase):
         self.assertEqual(producer["dawn_cmake_compiler"]["version"], "clang version 20.1.0")
         self.assertEqual(receipt["runtime"]["compile_flag"], "/MT")
         self.assertIn(TOOLSET, receipt["runtime"]["consumer_requirement"])
+        self.assertEqual(producer["skia_builder_ref"],
+                         "e22740ed2852ebb3d5a801d6ac48b39788ed18bb")
         self.assertEqual(MODULE.validate_receipt(receipt, "arm64", "Release"), [])
+
+    def test_invalid_builder_ref_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self.receipt(builder_ref="not-a-commit")
 
     def test_unresolvable_toolchain_fails_validation(self):
         receipt = MODULE.build_receipt("arm64", "Release", "gpu", vc_dir=self.tmp / "missing",

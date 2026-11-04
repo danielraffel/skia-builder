@@ -373,7 +373,7 @@ jobs:
         if: steps.check.outputs.should_build == 'true' && runner.os == 'Windows' && matrix.variant == 'gpu'
         shell: pwsh
         run: |
-          py -3 tools/write_windows_toolchain_provenance.py "$env:RUNNER_TEMP/msvc-toolchain.json" --arch "${{ matrix.arch }}" --configuration "${{ matrix.config || 'Release' }}" --variant "${{ matrix.variant }}"
+          py -3 tools/write_windows_toolchain_provenance.py "$env:RUNNER_TEMP/msvc-toolchain.json" --arch "${{ matrix.arch }}" --configuration "${{ matrix.config || 'Release' }}" --variant "${{ matrix.variant }}" --builder-ref "${{ github.sha }}"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # - name: Build Skia (Debug)
@@ -425,6 +425,7 @@ jobs:
           $config = "${{ matrix.config || 'Release' }}"
           $out = "build/${{ matrix.platform }}-${{ matrix.variant }}/msvc-toolchain.json"
           $receiptArgs = @($out, "--arch", $arch, "--configuration", $config, "--variant", "${{ matrix.variant }}")
+          $receiptArgs += @("--builder-ref", "${{ github.sha }}")
           if ("${{ inputs.test_mode }}" -ne "true") {
             # The cl.exe GN actually built with is authoritative.
             $receiptArgs += @("--toolchain-ninja", "build/tmp/skia/${{ matrix.platform }}_${config}_${arch}_${{ matrix.variant }}/toolchain.ninja")

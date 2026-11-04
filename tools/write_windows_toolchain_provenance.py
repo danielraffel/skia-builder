@@ -43,6 +43,7 @@ CL_PATH_RE = re.compile(
 BAD_VALUE_RE = re.compile(r"unknown|error|no input files|not recognized|not found|cannot find",
                           re.IGNORECASE)
 GN_TARGET_CPU = {"arm64": "arm64", "x64": "x64", "x86_64": "x64", "win32": "x86", "x86": "x86"}
+GIT_REF_RE = re.compile(r"^[0-9a-f]{40}$")
 DEFAULT_WIN_SDK = r"C:\Program Files (x86)\Windows Kits\10"
 DEFAULT_CLANG_CL = r"C:\Program Files\LLVM\bin\clang-cl.exe"
 
@@ -119,7 +120,8 @@ def resolve_clang_cl() -> str:
 
 def build_receipt(arch: str, configuration: str, variant: str, *,
                   vc_dir: Path | None = None, win_sdk: Path | None = None,
-                  toolchain_ninja: Path | None = None, run: Runner = _run) -> dict:
+                  toolchain_ninja: Path | None = None, builder_ref: str | None = None,
+                  run: Runner = _run) -> dict:
     target_cpu = GN_TARGET_CPU.get(arch.lower(), arch.lower())
     vc_dir = vc_dir or find_msvc(run=run)
     toolset = os.environ.get("VCToolsVersion", "").strip("\\/ ") or (
@@ -135,6 +137,9 @@ def build_receipt(arch: str, configuration: str, variant: str, *,
     if built:
         cl, toolset = built
     clang = resolve_clang_cl()
+    builder_ref = (builder_ref or os.environ.get("SKIA_BUILDER_REF", "")).strip().lower()
+    if builder_ref and not GIT_REF_RE.fullmatch(builder_ref):
+        raise ValueError("builder_ref must be a 40-character lowercase git commit")
     return {
         "schema_version": 1,
         "target": {"platform": "windows", "architecture": arch, "configuration": configuration,
@@ -155,6 +160,11 @@ def build_receipt(arch: str, configuration: str, variant: str, *,
             "windows_sdk_version": sdk or "unknown",
             "visual_studio_vc_dir": str(vc_dir) if vc_dir else "unknown",
             "host_architecture": platform.machine(),
+            # The archive may be consumed from an explicit provider directory,
+            # where VERSION.md is absent. Keep the producer identity beside
+            # the toolchain receipt so consumers can bind it without guessing
+            # from their own checkout.
+            "skia_builder_ref": builder_ref or None,
         },
         "runtime": {
             "abi": "msvc",
@@ -225,6 +235,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--variant", default="gpu")
     parser.add_argument("--toolchain-ninja", type=Path,
                         help="GN's toolchain.ninja; the cl.exe it names is authoritative")
+    parser.add_argument("--builder-ref",
+                        help="40-character skia-builder commit that produced this archive")
     parser.add_argument("--check", action="store_true",
                         help="validate an existing receipt instead of writing one")
     args = parser.parse_args(argv)
@@ -232,7 +244,8 @@ def main(argv: list[str] | None = None) -> int:
         receipt = json.loads(args.output.read_text(encoding="utf-8"))
     else:
         receipt = build_receipt(args.arch, args.configuration, args.variant,
-                                toolchain_ninja=args.toolchain_ninja)
+                                toolchain_ninja=args.toolchain_ninja,
+                                builder_ref=args.builder_ref)
         if args.toolchain_ninja and receipt["producer"]["skia_gn_compiler"]["source"] \
                 != "toolchain.ninja":
             print(f"error: no cl.exe path found in {args.toolchain_ninja}", file=sys.stderr)

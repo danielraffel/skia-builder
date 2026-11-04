@@ -452,6 +452,8 @@ class SkiaBuildScript:
         self.branch = None
         self.variant = "gpu"
         self.target = "all"  # device, simulator, or all
+        self.windows_vector_raster = False
+        self.vector_raster_outputs = {}
 
     def parse_arguments(self):
         parser = argparse.ArgumentParser(description="Build Skia for macOS, iOS, visionOS, Windows, Linux and WebAssembly")
@@ -470,6 +472,8 @@ class SkiaBuildScript:
                            help="Create a zip archive containing all platform libraries")
         parser.add_argument("--strip-arm64e", action="store_true",
                            help="Strip arm64e slice from iOS/visionOS libraries (reduces size)")
+        parser.add_argument("--windows-vector-raster", action="store_true",
+                           help="Experimental pinned-Clang SkOpts unit for Windows ARM slices")
         args = parser.parse_args()
 
         if args.platform == "xcframework":
@@ -495,6 +499,10 @@ class SkiaBuildScript:
         self.create_zip_all = args.zip_all
         self.strip_arm64e = args.strip_arm64e
         self.validate_archs()
+        self.windows_vector_raster = args.windows_vector_raster
+        if self.windows_vector_raster and (
+                self.platform != 'win' or not set(self.archs) <= {'arm64', 'arm64ec'}):
+            parser.error('--windows-vector-raster requires explicit Windows arm64/arm64ec slices')
 
     def get_default_archs(self):
         if self.platform == "mac":
@@ -799,6 +807,22 @@ class SkiaBuildScript:
             print(f"Error details: {e}")
             sys.exit(1)
 
+        if self.windows_vector_raster:
+            llvm_root = os.environ.get('LLVM_PATH')
+            if not llvm_root:
+                raise RuntimeError('LLVM_PATH must identify the pinned LLVM installation')
+            # Keep Ninja's MSVC output intact. A unique candidate also keeps
+            # previous compile/link evidence across incremental invocations.
+            candidate_dir = output_dir / f'vector-raster-{time.time_ns()}'
+            candidate_dir.mkdir()
+            candidate = candidate_dir / 'skia.lib'
+            subprocess.run([
+                sys.executable, str(Path(__file__).parent / 'tools/build_windows_vector_raster.py'),
+                '--build-dir', str(output_dir), '--source-dir', str(SKIA_SRC_DIR),
+                '--original', str(output_dir / 'skia.lib'), '--output', str(candidate),
+                '--arch', arch, '--llvm-bin', str(Path(llvm_root) / 'bin')], check=True)
+            self.vector_raster_outputs[arch] = candidate
+
     def get_ninja_target_name(self, lib: str) -> str:
         """Return the Ninja target name for a packaged library filename."""
         if self.platform == "win" and lib.endswith(".lib"):
@@ -839,9 +863,14 @@ class SkiaBuildScript:
         # Copy the libraries
         for lib in LIBS[self.platform]:
             src_file = src_dir / self.get_built_library_name(lib)
+            if lib == 'skia.lib' and arch in self.vector_raster_outputs:
+                src_file = self.vector_raster_outputs[arch]
             dest_file = dest_dir / lib
             if src_file.exists():
                 shutil.copy2(str(src_file), str(dest_file))
+                if lib == 'skia.lib' and arch in self.vector_raster_outputs:
+                    for suffix in ('.raster-object.json', '.compile.json'):
+                        shutil.copy2(src_file.with_suffix(suffix), dest_file.with_suffix(suffix))
                 colored_print(f"Copied {lib} to {dest_dir}", Colors.OKGREEN)
                 # Strip arm64e if requested (iOS/visionOS only)
                 if self.strip_arm64e and self.platform in ["ios", "visionos"]:

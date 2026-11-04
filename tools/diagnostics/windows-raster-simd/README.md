@@ -98,8 +98,8 @@ provider archive to Clang as a shortcut.
 with llvm-ar/llvm-lib. It refuses to overwrite an existing output, checks the
 replacement machine and complete normal SkOpts symbols, rejects x86 dispatch
 and STL helper imports, and verifies that all unrelated object bytes and names
-survive unchanged. This tool does not yet integrate compilation into
-`build-skia.py`; callers must preserve the exact provider compilation recipe.
+survive unchanged. Its companion producer step below derives compilation from
+the actual Ninja recipe rather than a separately reconstructed flag list.
 
 A candidate with only this member replaced linked an MSVC primitive consumer
 in the ARM64EC UTM guest without either diagnostic object. Its normal startup
@@ -111,6 +111,30 @@ This proves the primitive archive consumer, not final product qualification.
 Compile the probe with `/DPULP_RASTER_PROVIDER_PROBE` and invoke it as
 `raster-simd-probe-provider.exe provider output.bgra` to exercise only normal
 provider initialization, with no runtime table replacement.
+
+The producer now has an explicit experimental integration:
+
+```sh
+python3 build-skia.py win -archs arm64ec -config Release \
+  -revision be7d7c3e996e567eda7dc9774274f7a0103cdb8c --windows-vector-raster
+```
+
+`LLVM_PATH` must identify LLVM 20.1.0, the workflow's pinned toolchain. After
+the ordinary MSVC build, the step reads Ninja's expanded compilation database,
+requires exactly one normal `SkOpts.cpp` command, and preserves its includes,
+defines, optimization, language standard and CRT. It removes only the MSVC
+compiler/output/PDB selection and EC driver switch, then selects Clang's
+explicit target and the measured highp-only configuration. Unknown compiler
+wrappers, response files, PCHs, target overrides, CRT/architecture conflicts and
+language-keyword overrides are refused. The original archive stays intact.
+Only the verified candidate and its compile/transform receipts are packaged.
+Native ARM64 is a separate explicit invocation; Intel keeps its existing build.
+
+This integration is opt-in pending real pinned-toolchain compile, archive,
+consumer and installed-product qualification. The receipt records source HEAD,
+tracked patch digest, compiler hash/version, original compile recipe, object
+and archive hashes, CRT and architecture. It explicitly does not grant shipping
+qualification. Earlier Homebrew LLVM 23.1.3 results cannot qualify LLVM 20.1.0.
 
 The same archive subsequently linked Spectr's standalone, VST3 and CLAP targets.
 Four standalone traces exercised live noise, 64 bands, LFO modulation and 38

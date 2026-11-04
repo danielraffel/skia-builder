@@ -123,6 +123,11 @@ python3 build-skia.py win -archs arm64ec -config Release \
 the ordinary MSVC build, the step reads Ninja's expanded compilation database,
 requires exactly one normal `SkOpts.cpp` command, and preserves its includes,
 defines, optimization, language standard and CRT. It preserves the known
+MSVC compiler header directory as a system include: this retains that exact
+STL while allowing Clang's own NEON intrinsic header to precede MSVC's
+incompatible `arm_neon.h` forwarding wrapper. Project and SDK include paths
+retain their original classification. The recipe records this transformation.
+It preserves the known
 `ccache` wrapper when present and refuses other wrappers. It removes only the MSVC
 compiler/output/PDB selection and EC driver switch, then selects Clang's
 explicit target and the measured highp-only configuration. Unknown compiler

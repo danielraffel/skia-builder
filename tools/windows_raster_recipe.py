@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 import shutil
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 
 def split_windows_command(command: str) -> list[str]:
@@ -73,6 +73,17 @@ def recipe(rows: list[dict], source: Path, arch: str, compiler: Path,
     if args[0].replace('\\', '/').lower().split('/')[-2:-1] != ['arm64']:
         raise ValueError('provider compiler must be the explicit MSVC ARM64 target tool')
     cwd = Path(row['directory']).resolve()
+    # MSVC's arm_neon.h forwards to MSVC-only __n128 intrinsics. Clang's
+    # ext_vector_type implementation needs its own arm_neon.h instead. Keep
+    # the selected STL headers, but classify this compiler-owned directory as
+    # a system include so Clang's resource headers take their normal priority.
+    msvc_include = PureWindowsPath(args[0]).parents[3] / 'include'
+    system_includes = []
+    def include_flags(prefix, directory):
+        if PureWindowsPath(directory) == msvc_include:
+            system_includes.append(directory)
+            return ['-imsvc', directory]
+        return [prefix + directory]
     flags, sources, runtime, ec, i = [], 0, [], 0, 1
     while i < len(args):
         arg = args[i]
@@ -88,6 +99,13 @@ def recipe(rows: list[dict], source: Path, arch: str, compiler: Path,
                     raise ValueError('missing compiler output argument')
         elif low in ('/showincludes', '/fs', '/mp', '/c'):
             pass
+        elif arg in ('/I', '-I'):
+            i += 1
+            if i >= len(args):
+                raise ValueError('missing include directory')
+            flags.extend(include_flags(arg, args[i]))
+        elif arg.startswith(('/I', '-I')):
+            flags.extend(include_flags(arg[:2], arg[2:]))
         elif low == '/arm64ec':
             ec += 1
         elif low in ('/mt', '/mtd', '/md', '/mdd'):
@@ -113,4 +131,5 @@ def recipe(rows: list[dict], source: Path, arch: str, compiler: Path,
                '/Fo' + str(output.resolve())]
     return {'directory': str(cwd), 'arguments': command, 'provider_compile': row,
             'architecture': arch, 'runtime': runtime[0], 'highp_only': True,
-            'keyword_override': False, 'cache_wrapper': wrapper}
+            'keyword_override': False, 'cache_wrapper': wrapper,
+            'msvc_system_include_directories': system_includes}

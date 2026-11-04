@@ -4,7 +4,7 @@ import random
 import subprocess
 import unittest
 from unittest.mock import patch
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from windows_raster_recipe import recipe, split_windows_command
 
@@ -37,6 +37,18 @@ class RecipeTests(unittest.TestCase):
             self.plan(args)
         with self.assertRaises(ValueError):
             self.plan(arch='arm64')
+
+    def test_compiler_headers_do_not_shadow_clang_intrinsics(self):
+        for include in (['-IC:/VS/VC/include'], ['/I', r'c:\VS\VC\include']):
+            result = self.plan(self.args + include + ['-IC:/SDK/ucrt', '-Iproject/include'])
+            argv = result['arguments']
+            index = argv.index('-imsvc')
+            self.assertEqual(PureWindowsPath(argv[index + 1]), PureWindowsPath('C:/VS/VC/include'))
+            self.assertIn('-IC:/SDK/ucrt', argv)
+            self.assertIn('-Iproject/include', argv)
+            self.assertEqual(len(result['msvc_system_include_directories']), 1)
+        with self.assertRaisesRegex(ValueError, 'missing include'):
+            self.plan(self.args + ['/I'])
 
     def test_repeated_identical_crt_does_not_become_a_false_conflict(self):
         plan = self.plan(self.args + ['/MT', '/arm64EC'])

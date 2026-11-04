@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import subprocess
+import os
 from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location('build_skia', Path(__file__).parents[1] / 'build-skia.py')
@@ -45,6 +46,19 @@ class IntegrationTests(unittest.TestCase):
                               side_effect=subprocess.CalledProcessError(1, 'patch')), \
                  self.assertRaises(subprocess.CalledProcessError):
                 script.apply_patches()
+
+    def test_ninja_honors_the_governed_nested_build_share(self):
+        script = build_skia.SkiaBuildScript()
+        script.platform, script.config = 'win', 'Release'
+        with patch.dict(os.environ, {'CMAKE_BUILD_PARALLEL_LEVEL': '3'}), \
+             patch.object(build_skia.subprocess, 'run') as run:
+            script.build_skia('arm64ec')
+            self.assertEqual(run.call_args.args[0][-2:], ['-j', '3'])
+        for invalid in ('', '0', '-1', 'auto', '3 4'):
+            with patch.dict(os.environ, {'CMAKE_BUILD_PARALLEL_LEVEL': invalid}), \
+                 patch.object(build_skia.subprocess, 'run') as run, self.assertRaises(ValueError):
+                script.build_skia('arm64ec')
+            run.assert_not_called()
 
     def test_packaging_uses_candidate_and_both_receipts_preserves_scalar(self):
         with tempfile.TemporaryDirectory() as directory:

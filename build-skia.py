@@ -796,6 +796,14 @@ class SkiaBuildScript:
         
         # Construct the ninja command with all library targets
         ninja_command = ["ninja", "-C", str(output_dir)] + libs_to_build
+        # A build governor exports its granted share for nested CMake builds.
+        # Ninja does not consume that variable itself; honor the same share
+        # here so the outer Skia build cannot outrun the governed allocation.
+        parallel_level = os.environ.get('CMAKE_BUILD_PARALLEL_LEVEL')
+        if parallel_level is not None:
+            if not parallel_level.isascii() or not parallel_level.isdecimal() or int(parallel_level) < 1:
+                raise ValueError('CMAKE_BUILD_PARALLEL_LEVEL must be a positive integer')
+            ninja_command += ['-j', parallel_level]
 
         # Run the ninja command
         try:

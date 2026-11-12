@@ -31,7 +31,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout repository (release asset guard)
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           path: src
 
@@ -136,7 +136,7 @@ jobs:
             --repin-hint "consumers pinning {tag}/{asset}: sha256 {old} -> {new}"
 
       - name: Upload XCFramework artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Skia.xcframework
           path: Skia.xcframework.zip

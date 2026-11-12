@@ -86,7 +86,7 @@ jobs:
       skia: ${{ steps.lock.outputs.skia }}
       dawn: ${{ steps.lock.outputs.dawn }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       # A backfill adds an asset to a release that already exists, so it must
       # build the exact Skia/Dawn revision that release was cut from, not the
       # branch head, which keeps moving after the release.
@@ -129,7 +129,7 @@ jobs:
             --output skia-release-lock.json \
             --github-output "$GITHUB_OUTPUT"
       - name: Upload immutable release lock
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: skia-release-lock
           path: skia-release-lock.json
@@ -140,7 +140,7 @@ jobs:
     outputs:
       matrix: ${{ steps.select.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Select requested build cells
         id: select
         env:
@@ -204,7 +204,7 @@ jobs:
 
       - name: Checkout repository
         if: steps.check.outputs.should_build == 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
 
       - name: Free disk space (Linux)
         if: steps.check.outputs.should_build == 'true' && runner.os == 'Linux'
@@ -246,7 +246,7 @@ jobs:
 
       - name: Set up Python
         if: steps.check.outputs.should_build == 'true'
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.x'
 
@@ -342,7 +342,7 @@ jobs:
 
       - name: Cache depot_tools and Skia source
         if: steps.check.outputs.should_build == 'true'
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: |
             build/tmp/depot_tools
@@ -369,7 +369,7 @@ jobs:
           } >> "$GITHUB_ENV"
       - name: Restore ccache (compiled objects — re-runs recompile only changed TUs)
         if: steps.check.outputs.should_build == 'true'
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: ${{ github.workspace }}/.ccache
           key: ccache-${{ runner.os }}-${{ steps.cache-key.outputs.arch }}-${{ matrix.platform }}-${{ matrix.variant }}-${{ env.SKIA_BRANCH }}-${{ github.run_id }}
@@ -547,7 +547,7 @@ jobs:
 
       - name: Upload artifact
         if: steps.check.outputs.should_build == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.archive.outputs.name }}
           path: |
@@ -556,7 +556,7 @@ jobs:
 
       - name: Upload provenance diagnostics (Apple)
         if: always() && steps.check.outputs.should_build == 'true' && runner.os == 'macOS' && !inputs.test_mode
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.archive.outputs.name }}-provenance
           path: provenance/
@@ -597,7 +597,7 @@ jobs:
       attestations: write
     steps:
       - name: Download Apple cell outputs
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           pattern: skia-build-*-release
           path: cells
@@ -664,7 +664,7 @@ jobs:
           ls -la attestation
       - name: Upload attestation bundles
         if: steps.subjects.outputs.present == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: skia-build-apple-attestation
           path: attestation/*.sigstore.json
@@ -681,7 +681,7 @@ jobs:
     if: ${{ inputs.platforms == 'all' || contains(inputs.platforms, 'linux') }}
     runs-on: ubuntu-24.04
     container:
-      image: ubuntu:22.04
+      image: ubuntu@sha256:74b12b11ffa550fba1929ad4d8d16533c34f6612728469671afba1b03b66881c # ubuntu:22.04
     # Plain bash (the `bash` shorthand adds -eo pipefail → `... | head` SIGPIPE-fails).
     defaults:
       run:
@@ -735,7 +735,7 @@ jobs:
       - name: Report build-host glibc (the guaranteed floor ceiling)
         if: ${{ !inputs.test_mode }}
         run: ldd --version | head -1
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Install LLVM and Clang ${{ env.LLVM_VERSION }} (Linux x64)
         if: ${{ !inputs.test_mode }}
         run: |
@@ -822,7 +822,7 @@ jobs:
         if: ${{ !inputs.test_mode }}
         run: python3 tools/check_linux_archive.py skia-build-linux-x64-gpu-release.zip
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: skia-build-linux-x64-gpu-release
           path: skia-build-linux-x64-gpu-release.zip
@@ -833,27 +833,27 @@ jobs:
     runs-on: ${{ inputs.apple_runner || 'macos-15' }}
     steps:
       - name: Download macOS artifact
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: skia-build-mac-universal-gpu-release
 
       - name: Download iOS device artifact
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: skia-build-ios-device-arm64-gpu-release
 
       - name: Download iOS simulator artifact
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: skia-build-ios-simulator-arm64-x86_64-gpu-release
 
       - name: Download visionOS device artifact
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: skia-build-visionos-device-arm64-gpu-release
 
       - name: Download visionOS simulator artifact
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: skia-build-visionos-simulator-arm64-gpu-release
 
@@ -927,7 +927,7 @@ jobs:
         run: zip -ry Skia.xcframework.zip Skia.xcframework  # -y preserves symlinks
 
       - name: Upload XCFramework artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Skia.xcframework
           path: Skia.xcframework.zip
@@ -942,12 +942,12 @@ jobs:
       RELEASE_TAG: ${{ needs.resolve-skia.outputs.tag }}${{ inputs.test_mode && '-test' || '' }}
     steps:
       - name: Checkout repository (release tools)
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           path: src
 
       - name: Download artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
 
       - name: Smoke-check Windows archives
         if: ${{ !inputs.test_mode }}
@@ -996,7 +996,7 @@ jobs:
             carry-ledger release-notes.md
 
       - name: Create Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           body_path: release-notes.md
           tag_name: ${{ needs.resolve-skia.outputs.tag }}${{ inputs.test_mode && '-test' || '' }}
@@ -1039,11 +1039,11 @@ jobs:
       contents: write
     steps:
       - name: Checkout repository (release tools)
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           path: src
       - name: Download ARM64 Windows artifact
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: skia-build-win-arm64-gpu-release
           path: artifact
@@ -1081,16 +1081,16 @@ jobs:
       contents: write
     steps:
       - name: Checkout repository (release tools)
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           path: src
       - name: Download Linux x64 artifact
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: skia-build-linux-x64-gpu-release
           path: artifact
       - name: Download Linux arm64 artifact
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: skia-build-linux-arm64-gpu-release
           path: artifact

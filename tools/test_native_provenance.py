@@ -132,6 +132,8 @@ class LinuxReceiptTests(unittest.TestCase):
             out = {"clang": clang, "clang++": clang, "ar": "GNU ar (GNU Binutils for Ubuntu) 2.38",
                    "ld": "GNU ld (GNU Binutils for Ubuntu) 2.38", "ldd": glibc,
                    "ccache": "ccache version 4.5.1"}.get(program, "")
+            if program == "objdump":
+                out = "00 g DF .text GLIBC_2.17 memcpy\n00 g DF .text GLIBC_2.34 x\n00 DO GLIBCXX_3.4.29 y\n"
             if args[-1] == "-dumpmachine":
                 out = "x86_64-unknown-linux-gnu"
             if "-E" in args:
@@ -145,13 +147,18 @@ class LinuxReceiptTests(unittest.TestCase):
                                        hasher=lambda path: "ab" * 32, realpath=lambda path: path)
         return linux_tool.build_receipt("x64", "Release", "gpu", [self.ninja], archive, probe=probe,
                                         container_image="ubuntu@sha256:" + "0" * 64,
+                                        link_probe_enabled=True,
                                         os_release_path=self.os_release)
 
     def test_a_receipt_matching_its_archive_is_proven(self):
         archive = self.archive()
         receipt = self.receipt(archive)
         self.assertEqual(linux_tool.validate_receipt(receipt, archive), [])
-        self.assertEqual(receipt["libstdcxx"]["glibcxx_release"], "11")
+        self.assertEqual(receipt["cpp_abi"]["x64"], {"stdlib": "libstdc++", "stdlib_version": "11",
+                                                      "glibcxx_release": "11"})
+        self.assertEqual(receipt["observed"]["max_glibc_version"], "2.34")
+        self.assertEqual(receipt["observed"]["max_glibcxx_version"], "3.4.29")
+        self.assertEqual(receipt["compiler"]["cxx"]["vendor"], "clang")
         self.assertEqual(receipt["libc"]["version"], "2.35")
         self.assertEqual(receipt["observed_elf"]["machines"], {"x64": 1})
 
@@ -164,6 +171,17 @@ class LinuxReceiptTests(unittest.TestCase):
         archive = self.archive(machine=183)
         problems = linux_tool.validate_receipt(self.receipt(archive), archive)
         self.assertTrue(any("in a x64 cell" in problem for problem in problems), problems)
+
+    def test_objects_needing_a_newer_glibc_than_the_producer_are_refused(self):
+        archive = self.archive()
+        problems = linux_tool.validate_receipt(self.receipt(archive, glibc="ldd (x) 2.31"), archive)
+        self.assertTrue(any("newer than the producer" in problem for problem in problems), problems)
+
+    def test_an_unmeasured_symbol_version_is_refused(self):
+        archive = self.archive()
+        receipt = self.receipt(archive)
+        del receipt["observed"]["max_glibcxx_version"]
+        self.assertTrue(any("max_glibcxx_version" in p for p in linux_tool.validate_receipt(receipt, archive)))
 
     def test_an_unknown_compiler_banner_is_refused(self):
         archive = self.archive()
@@ -195,10 +213,11 @@ class LinuxReceiptTests(unittest.TestCase):
 
 
 class WindowsStagingTests(unittest.TestCase):
+    CL = r"C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\cl.exe"
+
     def receipt(self, toolset="14.44.35207"):
-        cl = rf"C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\{toolset}\bin\Hostx64\x64\cl.exe"
         banner = "Microsoft (R) C/C++ Optimizing Compiler Version 19.44.35207 for x64"
-        compiler = {"driver": "cl.exe", "path": cl, "version": banner, "source": "toolchain.ninja"}
+        compiler = {"driver": "cl.exe", "path": self.CL, "version": banner, "source": "toolchain.ninja"}
         return {"schema_version": 1,
                 "target": {"platform": "windows", "architecture": "x64", "configuration": "Release",
                            "variant": "gpu"},
@@ -208,21 +227,52 @@ class WindowsStagingTests(unittest.TestCase):
                 "runtime": {"abi": "msvc", "library": "static", "compile_flag": "/MT",
                             "consumer_requirement": f"MSVC STL/CRT toolset >= {toolset}"}}
 
-    def archive(self, tmp, receipt):
+    def archive(self, tmp, receipt, machine=0x8664):
         path = tmp / "skia-build-win-x64-gpu-release.zip"
         write_zip(path, [("build/win-gpu/msvc-toolchain.json", json.dumps(receipt, indent=2).encode()),
-                         ("build/win-gpu/lib/Release/skia.lib", b"!<arch>\n")])
+                         ("build/win-gpu/lib/Release/x64/skia.lib", gnu_ar([("a.obj", coff(machine))]))])
         return path
+
+    def stage(self, archive, out):
+        def banner(path):
+            return ("Microsoft (R) Incremental Linker Version 14.44.35207.0" if path.endswith("link.exe")
+                    else "Microsoft (R) Library Manager Version 14.44.35207.0")
+        source = archive_receipt_bytes(archive)
+        staged = stage_tool.derive(archive, json.loads(source), source, "x64", "Release", banner=banner,
+                                  hasher=lambda path: "cd" * 32)
+        data = stage_tool.canonical_bytes(staged)
+        out.mkdir(exist_ok=True)
+        path = out / stage_tool.content_addressed_name(archive.name, data)
+        path.write_bytes(data)
+        return path, staged
+
+    def check(self, archive, staged_path):
+        return stage_tool.main(["--archive", str(archive), "--arch", "x64", "--configuration",
+                                "Release", "--check", str(staged_path)])
 
     def test_stage_then_check_round_trips(self):
         with tempfile.TemporaryDirectory() as temporary:
             tmp = pathlib.Path(temporary)
             archive = self.archive(tmp, self.receipt())
-            args = ["--archive", str(archive), "--arch", "x64", "--configuration", "Release"]
-            self.assertEqual(stage_tool.main([*args, "--out-dir", str(tmp / "assets")]), 0)
-            staged = list((tmp / "assets").glob("*.msvc-toolchain.sha256-*.json"))
-            self.assertEqual(len(staged), 1)
-            self.assertEqual(stage_tool.main([*args, "--check", str(staged[0])]), 0)
+            path, staged = self.stage(archive, tmp / "assets")
+            self.assertEqual(self.check(archive, path), 0)
+            self.assertEqual(staged["observed"]["coff_machines"], {"x64": 1})
+            self.assertEqual(staged["msvc_toolset"], {"version": "14.44.35207"})
+            self.assertEqual(staged["cpp_abi"]["x64"]["stdlib"], "msvc-stl")
+
+    def test_staged_receipt_for_another_archive_is_refused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tmp = pathlib.Path(temporary)
+            path, _ = self.stage(self.archive(tmp, self.receipt()), tmp / "assets")
+            other = self.archive(tmp, self.receipt(), machine=0xAA64)
+            self.assertEqual(self.check(other, path), 1)
+
+    def test_an_object_for_another_architecture_is_refused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tmp = pathlib.Path(temporary)
+            archive = self.archive(tmp, self.receipt(), machine=0xAA64)
+            path, _ = self.stage(archive, tmp / "assets")
+            self.assertEqual(self.check(archive, path), 1)
 
     def test_a_receipt_that_proves_nothing_is_not_staged(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -235,15 +285,17 @@ class WindowsStagingTests(unittest.TestCase):
             self.assertEqual(stage_tool.main(args), 1)
             self.assertFalse((tmp / "assets").exists())
 
-    def test_a_staged_copy_that_differs_from_the_archive_member_is_refused(self):
+    def test_a_tampered_staged_copy_is_refused(self):
         with tempfile.TemporaryDirectory() as temporary:
             tmp = pathlib.Path(temporary)
             archive = self.archive(tmp, self.receipt())
-            args = ["--archive", str(archive), "--arch", "x64", "--configuration", "Release"]
-            self.assertEqual(stage_tool.main([*args, "--out-dir", str(tmp / "assets")]), 0)
-            staged = next((tmp / "assets").glob("*.json"))
-            staged.write_bytes(staged.read_bytes() + b" ")
-            self.assertEqual(stage_tool.main([*args, "--check", str(staged)]), 1)
+            path, _ = self.stage(archive, tmp / "assets")
+            path.write_bytes(path.read_bytes().replace(b"14.44.35207", b"14.44.35208", 1))
+            self.assertEqual(self.check(archive, path), 1)
+
+
+def archive_receipt_bytes(archive):
+    return stage_tool.archive_receipt(archive)
 
 
 class ToolchainRootTests(unittest.TestCase):

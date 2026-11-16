@@ -525,7 +525,7 @@ jobs:
           status=0
           python3 tools/write_linux_toolchain_receipt.py provenance/linux-toolchain.json \
             --archive "$ARCHIVE" --arch "$ARCH" --configuration "$CONFIG" --variant "$VARIANT" \
-            --toolchain-ninja "$dir/toolchain.ninja" \
+            --toolchain-ninja "$dir/toolchain.ninja" --link-probe \
             --content-addressed-dir provenance-assets || status=1
           python3 tools/write_legal_manifest.py provenance/legal-manifest.json \
             --archive "$ARCHIVE" --source-root build/src/skia --out-dir "$ARCH=$dir" \
@@ -1012,7 +1012,7 @@ jobs:
           status=0
           python3 tools/write_linux_toolchain_receipt.py provenance/linux-toolchain.json \
             --archive "$ARCHIVE" --arch x64 --configuration Release --variant gpu \
-            --toolchain-ninja "$dir/toolchain.ninja" \
+            --toolchain-ninja "$dir/toolchain.ninja" --link-probe \
             --container-image "ubuntu@sha256:74b12b11ffa550fba1929ad4d8d16533c34f6612728469671afba1b03b66881c" \
             --content-addressed-dir provenance-assets || status=1
           python3 tools/write_legal_manifest.py provenance/legal-manifest.json \

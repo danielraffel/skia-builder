@@ -146,7 +146,7 @@ def tool_row(probe: apple.Probe, program: str, version_args: list[str]) -> dict[
 
 def build_receipt(arch: str, configuration: str, variant: str, toolchain_ninja: list[Path],
                   archive: Path | None, probe: apple.Probe | None = None,
-                  container_image: str = "",
+                  container_image: str = "", link_probe_enabled: bool = False,
                   os_release_path: Path = Path("/etc/os-release")) -> dict[str, object]:
     probe = probe or apple.Probe()
     commands = {str(path): apple.toolchain_ninja_commands(path) for path in toolchain_ninja}
@@ -166,35 +166,79 @@ def build_receipt(arch: str, configuration: str, variant: str, toolchain_ninja: 
             os_release[key] = value.strip('"')
     except OSError:
         pass
+    glibcxx = match.group(1) if match else "unknown"
+    cxx["vendor"] = cc["vendor"] = "clang"
+    archiver = dict(tool_row(probe, "ar", ["--version"]), vendor="gnu-binutils")
+    linker = dict(tool_row(probe, "ld", ["--version"]), vendor="gnu-ld",
+                  note="not invoked for static archives; recorded for consumers that link them")
     receipt: dict[str, object] = {
         "schema": SCHEMA,
-        "target": {"platform": "linux", "architecture": arch, "configuration": configuration,
+        "target": {"platform": "linux", "architectures": [arch], "configuration": configuration,
                    "variant": variant},
         "runner": {
-            "image_os": os.environ.get("ImageOS", "local"),
-            "image_version": os.environ.get("ImageVersion", "local"),
             "runner_arch": os.environ.get("RUNNER_ARCH", platform.machine()),
             "os_release": os_release.get("PRETTY_NAME", "unknown"),
             "container_image": container_image or "none",
         },
+        "runner_image": {"name": os.environ.get("ImageOS", "local"),
+                         "version": os.environ.get("ImageVersion", "local")},
         "compiler": {
             "c": cc,
             "cxx": cxx,
             "target_triple": probe.out([cxx_path, "-dumpmachine"]),
             "gn_toolchain_commands": commands,
         },
-        "archiver": {"ar": tool_row(probe, "ar", ["--version"])},
-        "linker": dict(tool_row(probe, "ld", ["--version"]),
-                       note="not invoked for static archives; recorded for consumers that link them"),
-        "libc": {"implementation": "glibc",
+        "archiver": archiver,
+        "linker": linker,
+        "cpp_abi": {arch: {"stdlib": "libstdc++", "stdlib_version": glibcxx,
+                           "glibcxx_release": glibcxx}},
+        "libc": {"name": "glibc",
                  "version": glibc_match.group(1) if glibc_match else "unknown"},
-        "libstdcxx": {"glibcxx_release": match.group(1) if match else "unknown"},
         "ccache": apple.ccache_state(probe),
     }
     if archive is not None:
         receipt["archive"] = {"name": archive.name, "sha256": apple.sha256_file(archive)}
         receipt["observed_elf"] = observed_elf(archive)
+        receipt["observed"] = {
+            "elf_machines": sorted(receipt["observed_elf"]["machines"]),
+            **(link_probe(archive, cxx_path, probe) if link_probe_enabled else {}),
+        }
     return receipt
+
+
+def symbol_versions(objdump_output: str) -> dict[str, str]:
+    """The highest GLIBC_ and GLIBCXX_ version an ``objdump -T`` listing references."""
+    found: dict[str, tuple[int, ...]] = {}
+    for family, version in re.findall(r"\b(GLIBCXX|GLIBC)_([0-9]+(?:\.[0-9]+)+)", objdump_output):
+        key = tuple(int(part) for part in version.split("."))
+        if family not in found or key > found[family]:
+            found[family] = key
+    return {f"max_{family.lower()}_version": ".".join(str(part) for part in key)
+            for family, key in sorted(found.items())}
+
+
+def link_probe(archive: Path, cxx: str, probe: apple.Probe) -> dict[str, str]:
+    """Link every library whole into a throwaway executable and read its symbol versions.
+
+    A static archive's undefined references are unversioned; only a link
+    against the shared C and C++ libraries records the GLIBC_ and GLIBCXX_
+    versions the objects need.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as temporary, zipfile.ZipFile(archive) as handle:
+        libraries = []
+        for index, info in enumerate(i for i in handle.infolist() if i.filename.endswith(".a")):
+            target = Path(temporary) / f"{index}-{Path(info.filename).name}"
+            target.write_bytes(handle.read(info))
+            libraries.append(str(target))
+        source = Path(temporary) / "probe.c"
+        source.write_text("int main(void){return 0;}\n")
+        exe = Path(temporary) / "probe"
+        probe.out([cxx, str(source), "-Wl,--whole-archive", *libraries, "-Wl,--no-whole-archive",
+                   "-Wl,--unresolved-symbols=ignore-all", "-lstdc++", "-lm", "-lpthread", "-ldl",
+                   "-o", str(exe)], stream="both")
+        listing = probe.out(["objdump", "-T", str(exe)])
+        return symbol_versions(listing)
 
 
 def validate_receipt(receipt: dict, archive: Path | None = None) -> list[str]:
@@ -212,8 +256,8 @@ def validate_receipt(receipt: dict, archive: Path | None = None) -> list[str]:
         elif value is None:
             problems.append(f"{where} is null")
 
-    walk({key: receipt.get(key) for key in ("target", "runner", "compiler", "archiver", "linker",
-                                           "libc", "libstdcxx")}, "")
+    walk({key: receipt.get(key) for key in ("target", "runner", "runner_image", "compiler", "archiver",
+                                           "linker", "libc", "cpp_abi")}, "")
     if receipt.get("schema") != SCHEMA:
         problems.append(f"schema = {receipt.get('schema')!r}")
     compiler = receipt.get("compiler") or {}
@@ -232,13 +276,22 @@ def validate_receipt(receipt: dict, archive: Path | None = None) -> list[str]:
     if not LD_BANNER_RE.match(str((receipt.get("linker") or {}).get("version", ""))):
         problems.append(f"linker.version {(receipt.get('linker') or {}).get('version')!r} "
                         "is not an ld banner")
-    for name, row in (receipt.get("archiver") or {}).items():
-        if not HEX_64.match(str(row.get("sha256", ""))):
-            problems.append(f"archiver.{name}.sha256 is not a SHA-256")
-        if not AR_BANNER_RE.match(str(row.get("version", ""))):
-            problems.append(f"archiver.{name}.version {row.get('version')!r} is not an ar banner")
-    if not re.fullmatch(r"\d+", str((receipt.get("libstdcxx") or {}).get("glibcxx_release", ""))):
-        problems.append("libstdcxx.glibcxx_release is not a release number")
+    archiver = receipt.get("archiver") or {}
+    if not HEX_64.match(str(archiver.get("sha256", ""))):
+        problems.append("archiver.sha256 is not a SHA-256")
+    if not AR_BANNER_RE.match(str(archiver.get("version", ""))):
+        problems.append(f"archiver.version {archiver.get('version')!r} is not an ar banner")
+    for row_name in ("c", "cxx"):
+        if not str((compiler.get(row_name) or {}).get("path", "")).startswith("/"):
+            problems.append(f"compiler.{row_name}.path is not absolute")
+    if not str(archiver.get("path", "")).startswith("/"):
+        problems.append("archiver.path is not absolute")
+    if not str((receipt.get("linker") or {}).get("path", "")).startswith("/"):
+        problems.append("linker.path is not absolute")
+    target_arch = ((receipt.get("target") or {}).get("architectures") or [""])[0]
+    abi = (receipt.get("cpp_abi") or {}).get(target_arch) or {}
+    if not re.fullmatch(r"\d+", str(abi.get("stdlib_version", ""))) or abi.get("stdlib") != "libstdc++":
+        problems.append("cpp_abi has no libstdc++ release for the target architecture")
     if not re.fullmatch(r"\d+\.\d+", str((receipt.get("libc") or {}).get("version", ""))):
         problems.append("libc.version is not a glibc version")
     commands = compiler.get("gn_toolchain_commands") or {}
@@ -249,7 +302,7 @@ def validate_receipt(receipt: dict, archive: Path | None = None) -> list[str]:
             problems.append(f"{path}: no cxx command recorded")
     observed = receipt.get("observed_elf")
     if observed is not None:
-        arch = ARCH_NAMES.get(str((receipt.get("target") or {}).get("architecture", "")), "")
+        arch = ARCH_NAMES.get(str(target_arch), "")
         machines = observed.get("machines") or {}
         if not machines:
             problems.append("the archive holds no ELF object member")
@@ -261,6 +314,16 @@ def validate_receipt(receipt: dict, archive: Path | None = None) -> list[str]:
             problems.append("no object member records the clang that built it")
         elif versions and clang != versions:
             problems.append(f"objects were built by clang {sorted(clang)}, receipt names {sorted(versions)}")
+    observed_symbols = receipt.get("observed") or {}
+    if observed is not None:
+        for key in ("max_glibc_version", "max_glibcxx_version"):
+            if not re.fullmatch(r"\d+(\.\d+)+", str(observed_symbols.get(key, ""))):
+                problems.append(f"observed.{key} was not measured")
+        host = str((receipt.get("libc") or {}).get("version", ""))
+        needed = str(observed_symbols.get("max_glibc_version", ""))
+        if re.fullmatch(r"\d+(\.\d+)+", needed) and re.fullmatch(r"\d+\.\d+", host) \
+                and tuple(map(int, needed.split("."))) > tuple(map(int, host.split("."))):
+            problems.append(f"objects need glibc {needed}, newer than the producer's {host}")
     if archive is not None:
         actual = apple.sha256_file(archive)
         if (receipt.get("archive") or {}).get("sha256") != actual:
@@ -280,6 +343,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--variant", default="gpu")
     parser.add_argument("--toolchain-ninja", action="append", type=Path, default=[],
                         help="GN toolchain.ninja for the built architecture")
+    parser.add_argument("--link-probe", action="store_true",
+                        help="link the libraries whole and record the highest GLIBC_/GLIBCXX_ versions")
     parser.add_argument("--container-image", default="",
                         help="digest-pinned base image the build ran in, if any")
     parser.add_argument("--content-addressed-dir", type=Path)
@@ -303,7 +368,8 @@ def main(argv: list[str] | None = None) -> int:
     if not args.arch:
         parser.error("--arch is required")
     receipt = build_receipt(args.arch, args.configuration, args.variant, args.toolchain_ninja,
-                            args.archive, container_image=args.container_image)
+                            args.archive, container_image=args.container_image,
+                            link_probe_enabled=args.link_probe)
     data = apple.canonical_bytes(receipt)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(data)
@@ -316,7 +382,7 @@ def main(argv: list[str] | None = None) -> int:
             args.archive.name if args.archive else "toolchain", data)
         target.write_bytes(data)
         print(f"linux-toolchain-receipt: content-addressed copy {target}")
-    print(json.dumps({key: receipt[key] for key in ("compiler", "libc", "libstdcxx")}, indent=1)[:4000])
+    print(json.dumps({key: receipt[key] for key in ("compiler", "libc", "cpp_abi")}, indent=1)[:4000])
     return 1 if problems else 0
 
 

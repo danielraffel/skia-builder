@@ -49,7 +49,12 @@ PLATFORMS = {1: "macos", 2: "ios", 3: "tvos", 4: "watchos", 6: "maccatalyst",
              7: "ios-simulator", 8: "tvos-simulator", 9: "watchos-simulator",
              11: "visionos", 12: "visionos-simulator"}
 SYMBOL_TABLE_NAMES = {"__.SYMDEF", "__.SYMDEF SORTED", "__.SYMDEF_64",
-                      "__.SYMDEF_64 SORTED", "/", "/SYM64/"}
+                      "__.SYMDEF_64 SORTED", "/", "/SYM64/", "/<ECSYMBOLS>"}
+# ELF e_machine, COFF Machine and the wasm magic, named as the build matrix names
+# the architecture of the cell that produced them.
+ELF_MACHINES = {62: "x64", 183: "arm64"}
+COFF_MACHINES = {0x8664: "x64", 0xAA64: "arm64", 0xA641: "arm64ec", 0x014C: "x86"}
+WASM_MAGIC = b"\0asm"
 
 
 class ArchiveFormatError(ValueError):
@@ -139,11 +144,27 @@ def thin_arch(data: bytes) -> str:
         except ArchiveFormatError:
             return "unknown"
         for member in archive.members:
-            arch = macho_arch(member.data)
+            arch = macho_arch(member.data) or object_arch(member.data)
             if arch:
                 return arch
         return "unknown"
-    return macho_arch(data) or "unknown"
+    return macho_arch(data) or object_arch(data) or "unknown"
+
+
+def object_arch(data: bytes) -> str | None:
+    """Architecture of a non-Mach-O object: ELF, COFF (including /bigobj) or wasm."""
+    if data[:4] == b"\x7fELF" and len(data) >= 20:
+        order = "<" if data[5] == 1 else ">"
+        return ELF_MACHINES.get(struct.unpack(order + "H", data[18:20])[0])
+    if data[:4] == WASM_MAGIC:
+        return "wasm32"
+    if len(data) >= 20:
+        machine = struct.unpack("<H", data[0:2])[0]
+        # An /bigobj COFF file starts with a zero Machine, 0xFFFF and a version.
+        if machine == 0 and data[2:4] == b"\xff\xff":
+            machine = struct.unpack("<H", data[6:8])[0]
+        return COFF_MACHINES.get(machine)
+    return None
 
 
 def macho_arch(data: bytes) -> str | None:

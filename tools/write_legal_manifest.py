@@ -65,6 +65,9 @@ HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 CONTENT_ADDRESSED_RE = re.compile(r"\.legal-manifest\.sha256-([0-9a-f]{64})\.json$")
 OBJECT_SUFFIXES = (".o", ".obj")
 SKIP_DIRS = {".git", ".cipd", "__pycache__"}
+# Files this repository's build writes into the package; they are governed by
+# the builder's own license, not by any source file.
+BUILDER_METADATA = {"gn_args.txt", "msvc-toolchain.json"}
 
 Runner = Callable[[list[str], Path], str]
 
@@ -481,7 +484,7 @@ def build_manifest(archive: Path, graph: BuildGraph, cell: dict[str, object],
                     apple_archive.AR_MAGIC):
                 row["kind"] = "static-archive"
                 static_archives[info.filename] = describe_static_archive(info.filename, data, graph)
-            elif PurePosixPath(info.filename).name == "gn_args.txt":
+            elif PurePosixPath(info.filename).name in BUILDER_METADATA:
                 row["kind"] = "builder-metadata"
                 row["licenses"] = graph.builder_license()
             else:
@@ -635,7 +638,28 @@ def validate_manifest(manifest: dict, archive: Path | None = None) -> list[str]:
 
 # ------------------------------------------------------------------ main ----
 
-def default_toolchain_roots() -> list[Path]:
+def default_toolchain_roots(platform_name: str = "") -> list[Path]:
+    """Directories whose headers are toolchain inputs, not sources this build redistributes.
+
+    Linux and Windows cells list the system and compiler prefixes the runner
+    images use; ``LLVM_PATH`` and ``RUNNER_TOOL_CACHE`` add the LLVM the
+    workflow installs.  A header outside every root is a gap, never silently
+    treated as a toolchain input.
+    """
+    if platform_name == "linux":
+        roots = [Path("/usr"), Path("/opt"), Path("/lib"), Path("/etc")]
+        for variable in ("LLVM_PATH", "RUNNER_TOOL_CACHE"):
+            if os.environ.get(variable):
+                roots.append(Path(os.environ[variable]))
+        return roots
+    if platform_name == "win":
+        roots = [Path(os.environ.get(variable, default)) for variable, default in (
+            ("ProgramFiles", r"C:\Program Files"),
+            ("ProgramFiles(x86)", r"C:\Program Files (x86)"))]
+        for variable in ("LLVM_PATH", "WindowsSdkDir", "VCINSTALLDIR"):
+            if os.environ.get(variable):
+                roots.append(Path(os.environ[variable]))
+        return roots
     roots = [Path("/Library/Developer/CommandLineTools"), Path("/usr")]
     developer = os.environ.get("DEVELOPER_DIR")
     if not developer:
@@ -673,8 +697,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--builder-root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--ninja", default="ninja")
     parser.add_argument("--toolchain-root", action="append", type=Path, default=[],
-                        help="directory whose headers are toolchain inputs (SDK, libc++); "
-                             "defaults to the active developer dir, the Command Line Tools and /usr")
+                        help="directory whose headers are toolchain inputs (SDK, libc++, MSVC); "
+                             "defaults to the --platform's usual prefixes (on Apple, the active "
+                             "developer dir, the Command Line Tools and /usr)")
     parser.add_argument("--gn", help="GN binary; defaults to <source-root>/bin/gn")
     parser.add_argument("--expect-skia-revision", default="",
                         help="Skia commit the release lock pinned; a different checkout is a gap")
@@ -707,9 +732,11 @@ def main(argv: list[str] | None = None) -> int:
     out_dirs = parse_out_dirs(args.out_dir)
     gn = args.gn or str(args.source_root / "bin" / "gn")
     if not Path(gn).exists():
+        gn = str(args.source_root / "bin" / "gn.exe")
+    if not Path(gn).exists():
         gn = None
     graph = BuildGraph(args.source_root, out_dirs, args.ninja, builder_root=args.builder_root,
-                       toolchain_roots=args.toolchain_root or default_toolchain_roots())
+                       toolchain_roots=args.toolchain_root or default_toolchain_roots(args.platform))
     cell = {"platform": args.platform, "variant": args.variant,
             "configuration": args.configuration, "architectures": sorted(out_dirs)}
     expected = {name: value for name, value in (("skia", args.expect_skia_revision),

@@ -82,6 +82,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       tag: ${{ steps.lock.outputs.tag }}
+      publish: ${{ steps.lock.outputs.publish }}
       milestone: ${{ steps.lock.outputs.milestone }}
       skia: ${{ steps.lock.outputs.skia }}
       dawn: ${{ steps.lock.outputs.dawn }}
@@ -115,13 +116,15 @@ jobs:
             exit 1
           fi
           lock_args=()
+          python3 tools/release_tag.py "$SKIA_BRANCH" "$RELEASE_TAG" > release-tag.env
+          base="$(sed -n 's/^base=//p' release-tag.env)"
+          publish="$(sed -n 's/^publish=//p' release-tag.env)"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
           if [ -n "$RELEASE_TAG" ]; then
-            if [ "$RELEASE_TAG" != "$SKIA_BRANCH" ]; then
-              echo "::error::release_tag=$RELEASE_TAG must equal skia_branch=$SKIA_BRANCH: a backfill builds that release's own milestone"
-              exit 1
-            fi
+            # The lock comes from the base milestone release even when the run
+            # publishes an -attested.<n> re-cut, so the revisions are unchanged.
             mkdir -p published-lock
-            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            gh release download "$base" --repo "$GITHUB_REPOSITORY" \
               --pattern skia-release-lock.json --dir published-lock
             lock_args=(--from-release-lock published-lock/skia-release-lock.json)
           fi
@@ -1160,7 +1163,7 @@ jobs:
     permissions:
       contents: write
     env:
-      RELEASE_TAG: ${{ needs.resolve-skia.outputs.tag }}${{ inputs.test_mode && '-test' || '' }}
+      RELEASE_TAG: ${{ needs.resolve-skia.outputs.publish || needs.resolve-skia.outputs.tag }}${{ inputs.test_mode && '-test' || '' }}
     steps:
       - name: Checkout repository (release tools)
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -1220,8 +1223,8 @@ jobs:
         uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           body_path: release-notes.md
-          tag_name: ${{ needs.resolve-skia.outputs.tag }}${{ inputs.test_mode && '-test' || '' }}
-          name: ${{ needs.resolve-skia.outputs.tag }}${{ inputs.test_mode && ' (Test)' || '' }}
+          tag_name: ${{ needs.resolve-skia.outputs.publish || needs.resolve-skia.outputs.tag }}${{ inputs.test_mode && '-test' || '' }}
+          name: ${{ needs.resolve-skia.outputs.publish || needs.resolve-skia.outputs.tag }}${{ inputs.test_mode && ' (Test)' || '' }}
           draft: false
           prerelease: ${{ inputs.test_mode }}
           # Never delete-and-reupload a published asset; the guard step above
@@ -1457,7 +1460,8 @@ jobs:
             --repin-hint "$REPIN_HINT"
 
   trigger-matched-v8:
-    if: ${{ !inputs.skip_release && inputs.platforms == 'all' && !inputs.test_mode }}
+    # An -attested.<n> re-cut is not a new Skia milestone, so V8 is not re-triggered.
+    if: ${{ !inputs.skip_release && inputs.platforms == 'all' && !inputs.test_mode && needs.resolve-skia.outputs.publish == '' }}
     needs: [resolve-skia, create-release]
     runs-on: ubuntu-24.04
     steps:

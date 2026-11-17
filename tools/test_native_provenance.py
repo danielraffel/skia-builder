@@ -123,6 +123,8 @@ class LinuxReceiptTests(unittest.TestCase):
     def archive(self, machine=62, comments=(CLANG,)):
         path = self.tmp / "skia-build-linux-x64-gpu-release.zip"
         write_zip(path, [("build/linux-gpu/lib/libskia.a", gnu_ar([("a.o", elf(machine, comments))])),
+                         ("build/linux-gpu/lib/libdawn_combined.a",
+                          gnu_ar([("d.o", elf(machine, comments))])),
                          ("build/include/core.h", b"int core(void);\n")])
         return path
 
@@ -160,7 +162,7 @@ class LinuxReceiptTests(unittest.TestCase):
         self.assertEqual(receipt["observed"]["max_glibcxx_version"], "3.4.29")
         self.assertEqual(receipt["compiler"]["cxx"]["vendor"], "clang")
         self.assertEqual(receipt["libc"]["version"], "2.35")
-        self.assertEqual(receipt["observed_elf"]["machines"], {"x64": 1})
+        self.assertEqual(receipt["observed_elf"]["machines"], {"x64": 2})
 
     def test_objects_built_by_another_clang_are_refused(self):
         archive = self.archive(comments=("clang version 19.1.0 (x)",))
@@ -176,6 +178,19 @@ class LinuxReceiptTests(unittest.TestCase):
         archive = self.archive()
         problems = linux_tool.validate_receipt(self.receipt(archive, glibc="ldd (x) 2.31"), archive)
         self.assertTrue(any("newer than the producer" in problem for problem in problems), problems)
+
+    def test_a_failed_link_probe_reports_the_linker_error(self):
+        archive = self.tmp / "skia-build-linux-x64-gpu-release.zip"
+        fixtures_zip = [("build/linux-gpu/lib/libskia.a", gnu_ar([("a.o", elf())])),
+                        ("build/linux-gpu/lib/libdawn_combined.a", gnu_ar([("d.o", elf())]))]
+        write_zip(archive, fixtures_zip)
+        def run(args, stdin=None):
+            if args[0].endswith("clang++") or args[0] == "c++":
+                return subprocess.CompletedProcess(args, 1, stdout="", stderr="ld.lld: error: undefined x")
+            return self.runner()(args, stdin)
+        probe = linux_tool.apple.Probe(runner=run, which=lambda n: f"/usr/bin/{n}",
+                                       hasher=lambda p: "ab" * 32, realpath=lambda p: p)
+        self.assertIn("ld.lld: error", linux_tool.link_probe(archive, "/usr/bin/clang++", probe)["link_error"])
 
     def test_an_unmeasured_symbol_version_is_refused(self):
         archive = self.archive()

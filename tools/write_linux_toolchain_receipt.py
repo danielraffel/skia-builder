@@ -217,28 +217,39 @@ def symbol_versions(objdump_output: str) -> dict[str, str]:
             for family, key in sorted(found.items())}
 
 
+PROBE_LIBRARIES = ("libskia.a", "libdawn_combined.a")
+
+
 def link_probe(archive: Path, cxx: str, probe: apple.Probe) -> dict[str, str]:
-    """Link every library whole into a throwaway executable and read its symbol versions.
+    """Link the two big libraries whole into a throwaway executable and read its symbol versions.
 
     A static archive's undefined references are unversioned; only a link
     against the shared C and C++ libraries records the GLIBC_ and GLIBCXX_
-    versions the objects need.
+    versions the objects need.  The probe links exactly what the build's
+    glibc-floor gate links (libskia.a and libdawn_combined.a), because the
+    smaller modules add nothing the floor depends on and do not link alone.
+    A failed link is reported with the linker's own message, not as a
+    missing number.
     """
     import tempfile
     with tempfile.TemporaryDirectory() as temporary, zipfile.ZipFile(archive) as handle:
         libraries = []
-        for index, info in enumerate(i for i in handle.infolist() if i.filename.endswith(".a")):
-            target = Path(temporary) / f"{index}-{Path(info.filename).name}"
-            target.write_bytes(handle.read(info))
-            libraries.append(str(target))
+        for info in handle.infolist():
+            if Path(info.filename).name in PROBE_LIBRARIES:
+                target = Path(temporary) / Path(info.filename).name
+                target.write_bytes(handle.read(info))
+                libraries.append(str(target))
+        if len(libraries) != len(PROBE_LIBRARIES):
+            return {"link_error": f"archive lacks one of {PROBE_LIBRARIES}"}
         source = Path(temporary) / "probe.c"
         source.write_text("int main(void){return 0;}\n")
         exe = Path(temporary) / "probe"
-        probe.out([cxx, str(source), "-Wl,--whole-archive", *libraries, "-Wl,--no-whole-archive",
-                   "-Wl,--unresolved-symbols=ignore-all", "-lstdc++", "-lm", "-lpthread", "-ldl",
-                   "-o", str(exe)], stream="both")
-        listing = probe.out(["objdump", "-T", str(exe)])
-        return symbol_versions(listing)
+        done = probe.runner([cxx, str(source), "-Wl,--whole-archive", *libraries,
+                             "-Wl,--no-whole-archive", "-Wl,--unresolved-symbols=ignore-all",
+                             "-lstdc++", "-lm", "-lpthread", "-ldl", "-o", str(exe)])
+        if done.returncode != 0:
+            return {"link_error": ((done.stderr or "").strip() or f"exit {done.returncode}")[-400:]}
+        return symbol_versions(probe.out(["objdump", "-T", str(exe)]))
 
 
 def validate_receipt(receipt: dict, archive: Path | None = None) -> list[str]:
@@ -318,7 +329,9 @@ def validate_receipt(receipt: dict, archive: Path | None = None) -> list[str]:
     if observed is not None:
         for key in ("max_glibc_version", "max_glibcxx_version"):
             if not re.fullmatch(r"\d+(\.\d+)+", str(observed_symbols.get(key, ""))):
-                problems.append(f"observed.{key} was not measured")
+                problems.append(f"observed.{key} was not measured"
+                                + (f" (link probe: {observed_symbols['link_error']})"
+                                   if observed_symbols.get("link_error") else ""))
         host = str((receipt.get("libc") or {}).get("version", ""))
         needed = str(observed_symbols.get("max_glibc_version", ""))
         if re.fullmatch(r"\d+(\.\d+)+", needed) and re.fullmatch(r"\d+\.\d+", host) \

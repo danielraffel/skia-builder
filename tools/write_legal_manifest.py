@@ -652,6 +652,12 @@ def default_toolchain_roots(platform_name: str = "") -> list[Path]:
             if os.environ.get(variable):
                 roots.append(Path(os.environ[variable]))
         return roots
+    if platform_name == "android":
+        roots = [Path("/usr"), Path("/opt")]
+        for variable in ("ANDROID_NDK_HOME", "RUNNER_TEMP"):
+            if os.environ.get(variable):
+                roots.append(Path(os.environ[variable]))
+        return roots
     if platform_name == "win":
         roots = [Path(os.environ.get(variable, default)) for variable, default in (
             ("ProgramFiles", r"C:\Program Files"),

@@ -102,6 +102,11 @@ LINUX_LIB_DIR = BASE_DIR / "linux" / "lib"
 MAC_MIN_VERSION = os.environ.get("MAC_DEPLOYMENT_TARGET") or "13.0"
 IOS_MIN_VERSION = "14.0"  # Dawn requires iOS 14.0+ for C++ atomic wait/notify
 VISIONOS_MIN_VERSION = "1.0"
+# Android: the NDK revision Pulp builds against and the minimum API level
+# Skia/Dawn target (Pulp's build-skia-android.sh used the same ndk_api).
+ANDROID_NDK_REVISION = "30.0.14904198"
+ANDROID_NDK_API = 26
+ANDROID_ABI_CPU = {"arm64-v8a": "arm64", "x86_64": "x64"}
 
 # Unicode backend configuration
 USE_LIBGRAPHEME = False  # Set to True to use libgrapheme instead of ICU
@@ -155,6 +160,9 @@ LIBS = {
     ]
 }
 
+# Android builds the same library set as Linux.
+LIBS["android"] = list(LIBS["linux"])
+
 # Additional libraries for GPU variant (Dawn)
 GPU_LIBS = {
     "mac": ["libdawn_combined.a"],
@@ -163,6 +171,7 @@ GPU_LIBS = {
     "win": ["dawn_combined.lib"],
     "wasm": [],  # WASM uses browser WebGPU
     "linux": ["libdawn_combined.a"],
+    "android": ["libdawn_combined.a"],
 }
 
 # Patch scripts that change sources only a Windows slice needs.  They run for
@@ -337,6 +346,23 @@ PLATFORM_GN_ARGS = {
     skia_use_system_freetype2 = false
     extra_cflags_c = ["-Wno-error"]
     skia_use_partition_alloc = false
+    """,
+
+    # Same configuration as Pulp's tools/build-skia-android.sh (Graphite on
+    # Dawn/Vulkan), plus the PartitionAlloc setting the Linux build needs.
+    # `ndk` is added in generate_gn_args from ANDROID_NDK_HOME.
+    "android": f"""
+    target_os = "android"
+    skia_use_vulkan = true
+    skia_use_dawn = true
+    skia_use_gl = false
+    skia_use_metal = false
+    skia_use_direct3d = false
+    skia_use_freetype = true
+    skia_use_system_freetype2 = false
+    ndk_api = {ANDROID_NDK_API}
+    extra_cflags_c = ["-Wno-error"]
+    skia_use_partition_alloc = false
     """
 }
 
@@ -440,6 +466,15 @@ PLATFORM_GN_ARGS_CPU = {
     skia_use_system_freetype2 = false
     extra_cflags_c = ["-Wno-error"]
     skia_use_partition_alloc = false
+    """,
+
+    "android": f"""
+    target_os = "android"
+    skia_use_vulkan = false
+    skia_use_dawn = false
+    skia_use_gl = false
+    ndk_api = {ANDROID_NDK_API}
+    skia_use_partition_alloc = false
     """
 }
 
@@ -455,7 +490,7 @@ class SkiaBuildScript:
 
     def parse_arguments(self):
         parser = argparse.ArgumentParser(description="Build Skia for macOS, iOS, visionOS, Windows, Linux and WebAssembly")
-        parser.add_argument("platform", choices=["mac", "ios", "visionos", "win", "linux", "wasm", "xcframework"],
+        parser.add_argument("platform", choices=["mac", "ios", "visionos", "win", "linux", "wasm", "android", "xcframework"],
                            help="Target platform or xcframework")
         parser.add_argument("-config", choices=["Debug", "Release"], default="Release", help="Build configuration")
         parser.add_argument("-archs", help="Target architectures (comma-separated)")
@@ -509,6 +544,8 @@ class SkiaBuildScript:
             return ["x64"]
         elif self.platform == "wasm":
             return ["wasm32"]  # WebAssembly has only one architecture
+        elif self.platform == "android":
+            return ["arm64-v8a"]
 
     def validate_archs(self):
         valid_archs = {
@@ -517,6 +554,7 @@ class SkiaBuildScript:
             "visionos": ["arm64"],
             "win": ["x64", "arm64", "arm64ec", "Win32"],
             "linux": ["x64", "arm64"],
+            "android": ["arm64-v8a", "x86_64"],
             "wasm": ["wasm32"]
         }
         for arch in self.archs:
@@ -537,6 +575,11 @@ class SkiaBuildScript:
             return BASE_DIR / f"wasm{variant_suffix}" / "lib"
         elif platform == "linux":
             return BASE_DIR / f"linux{variant_suffix}" / "lib"
+        elif platform == "android":
+            # arm64-v8a is the canonical android-gpu/ (what Pulp's FindSkia
+            # reads by default); x86_64 stages beside it in android-gpu-x86_64/.
+            abi = "-x86_64" if self.archs and self.archs[0] == "x86_64" else ""
+            return BASE_DIR / f"android{variant_suffix}{abi}" / "lib"
         else:  # Windows
             return BASE_DIR / f"win{variant_suffix}" / "lib"
 
@@ -774,6 +817,20 @@ class SkiaBuildScript:
             gn_args += f"target_cpu = \"{'arm64' if arch == 'arm64' else 'x64'}\"\n"
         elif self.platform == "wasm":
             gn_args += "target_cpu = \"wasm\"\n"
+        elif self.platform == "android":
+            ndk = os.environ.get("ANDROID_NDK_HOME", "")
+            revision = ""
+            try:
+                for line in (Path(ndk) / "source.properties").read_text().splitlines():
+                    if line.startswith("Pkg.Revision"):
+                        revision = line.split("=", 1)[1].strip()
+            except OSError:
+                pass
+            if revision != ANDROID_NDK_REVISION:
+                colored_print(f"ANDROID_NDK_HOME={ndk!r} is NDK {revision or 'unknown'}, "
+                              f"expected {ANDROID_NDK_REVISION}", Colors.FAIL)
+                sys.exit(1)
+            gn_args += f'target_cpu = "{ANDROID_ABI_CPU[arch]}"\nndk = "{ndk}"\n'
 
         colored_print(f"Generating gn args for {self.platform} {arch} ({self.variant}) settings:", Colors.OKBLUE)
         colored_print(f"{gn_args}", Colors.OKGREEN)
@@ -829,7 +886,7 @@ class SkiaBuildScript:
             is_simulator = (self.target == "simulator")
             target_prefix = "simulator" if is_simulator else "device"
             dest_dir = lib_dir / self.config / f"{target_prefix}-{arch}"
-        elif self.platform == "wasm":
+        elif self.platform in ("wasm", "android"):
             dest_dir = lib_dir / self.config
         else:  # Windows, Linux
             dest_dir = lib_dir / self.config / arch
@@ -1301,7 +1358,7 @@ class SkiaBuildScript:
         else:
             gn_args = BASIC_GN_ARGS + PLATFORM_GN_ARGS[self.platform]
         gn_args += RELEASE_GN_ARGS
-        target_cpu = arch
+        target_cpu = ANDROID_ABI_CPU[arch] if self.platform == "android" else arch
         if self.platform == "win":
             # ARM64EC uses GN's ARM64 source/toolchain selection.  The EC ABI
             # is selected by the explicit compiler/linker flags below and the

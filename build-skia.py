@@ -361,6 +361,12 @@ PLATFORM_GN_ARGS = {
     skia_use_freetype = true
     skia_use_system_freetype2 = false
     ndk_api = {ANDROID_NDK_API}
+    skia_use_harfbuzz = true
+    skia_enable_paragraph = true
+    skia_enable_sksl = true
+    skia_use_libpng_decode = true
+    skia_use_libpng_encode = true
+    skia_use_zlib = true
     extra_cflags_c = ["-Wno-error"]
     skia_use_partition_alloc = false
     """
@@ -830,7 +836,9 @@ class SkiaBuildScript:
                 colored_print(f"ANDROID_NDK_HOME={ndk!r} is NDK {revision or 'unknown'}, "
                               f"expected {ANDROID_NDK_REVISION}", Colors.FAIL)
                 sys.exit(1)
-            gn_args += f'target_cpu = "{ANDROID_ABI_CPU[arch]}"\nndk = "{ndk}"\n'
+            # RELEASE_GN_ARGS turns GL on after the platform block; Pulp's build
+            # (and Android's Graphite-on-Vulkan design) leaves it off.
+            gn_args += f'target_cpu = "{ANDROID_ABI_CPU[arch]}"\nndk = "{ndk}"\nskia_use_gl = false\n'
 
         colored_print(f"Generating gn args for {self.platform} {arch} ({self.variant}) settings:", Colors.OKBLUE)
         colored_print(f"{gn_args}", Colors.OKGREEN)

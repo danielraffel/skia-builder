@@ -83,7 +83,7 @@ class WindowsToolchainProvenanceTests(unittest.TestCase):
         self.assertIn("skia_gn_compiler.version", text)
 
     def test_resolves_toolset_sdk_and_compiler_versions(self):
-        receipt = self.receipt()
+        receipt = self.receipt(builder_ref="e22740ed2852ebb3d5a801d6ac48b39788ed18bb")
         producer = receipt["producer"]
         self.assertEqual(producer["msvc_toolset_version"], TOOLSET)
         self.assertEqual(producer["windows_sdk_version"], SDK)
@@ -93,13 +93,21 @@ class WindowsToolchainProvenanceTests(unittest.TestCase):
         self.assertEqual(producer["dawn_cmake_compiler"]["version"], CL_BANNER)
         self.assertEqual(producer["dawn_cmake_compiler"]["driver"], "cl.exe")
         self.assertIn(os.path.join("MSVC", TOOLSET), producer["dawn_cmake_compiler"]["path"])
+        self.assertEqual(producer["skia_builder_ref"],
+                         "e22740ed2852ebb3d5a801d6ac48b39788ed18bb")
         self.assertEqual(receipt["runtime"]["compile_flag"], "/MT")
         self.assertIn(TOOLSET, receipt["runtime"]["consumer_requirement"])
         self.assertEqual(MODULE.validate_receipt(receipt, "arm64", "Release"), [])
 
+    def test_invalid_builder_ref_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self.receipt(builder_ref="not-a-commit")
+
     def test_arm64ec_uses_arm64_compiler_with_explicit_target_architecture(self):
         receipt = MODULE.build_receipt("arm64ec", "Release", "gpu", vc_dir=self.layout.vc,
-                                       win_sdk=self.layout.sdk, run=fake_run)
+                                       win_sdk=self.layout.sdk,
+                                       builder_ref="e22740ed2852ebb3d5a801d6ac48b39788ed18bb",
+                                       run=fake_run)
         self.assertEqual(receipt["target"]["architecture"], "arm64ec")
         self.assertTrue(receipt["producer"]["skia_gn_compiler"]["path"].endswith(
             os.path.join("HostX64", "arm64", "cl.exe")))

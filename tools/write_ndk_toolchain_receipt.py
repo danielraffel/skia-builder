@@ -43,6 +43,7 @@ ABI_TRIPLE = {"arm64-v8a": "aarch64-linux-android", "x86_64": "x86_64-linux-andr
 LLD_RE = re.compile(r"LLD \d+\.\d+")
 LLVM_AR_RE = re.compile(r"(LLVM|llvm)")
 REVISION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+PKG_REVISION_RE = re.compile(r"^\d+\.\d+\.\d+(-[A-Za-z0-9.]+)?$")
 
 
 def content_addressed_name(archive_name: str, data: bytes) -> str:
@@ -87,7 +88,9 @@ def build_receipt(abi: str, api_level: int, configuration: str, variant: str, nd
         "schema": SCHEMA,
         "target": {"platform": "android", "architectures": [abi], "configuration": configuration,
                    "variant": variant},
-        "ndk": {"revision": ndk_revision(ndk)},
+        # A preview NDK reports "30.0.14904198-beta1"; "revision" is the numeric
+        # pin, "pkg_revision" the full Pkg.Revision.
+        "ndk": {"revision": ndk_revision(ndk).split("-")[0], "pkg_revision": ndk_revision(ndk)},
         "api_level": api_level,
         "runner_image": {"name": os.environ.get("ImageOS", "local"),
                          "version": os.environ.get("ImageVersion", "local")},
@@ -129,6 +132,8 @@ def validate_receipt(receipt: dict, archive: Path | None = None) -> list[str]:
         problems.append(f"schema = {receipt.get('schema')!r}")
     if not REVISION_RE.match(str((receipt.get("ndk") or {}).get("revision", ""))):
         problems.append("ndk.revision is not a Pkg.Revision")
+    if not PKG_REVISION_RE.match(str((receipt.get("ndk") or {}).get("pkg_revision", ""))):
+        problems.append("ndk.pkg_revision is not a Pkg.Revision")
     if not isinstance(receipt.get("api_level"), int):
         problems.append("api_level is not an integer")
     compiler = receipt.get("compiler") or {}

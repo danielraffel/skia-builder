@@ -160,6 +160,52 @@ LIBS = {
     ]
 }
 
+# Android GN args, verbatim from Pulp's tools/build-skia-android.sh (Graphite on
+# Dawn/Vulkan), so the archive Pulp's Android CI is tested against is the one
+# published here. Only target_cpu and ndk are filled in per cell. Android does
+# NOT use BASIC_GN_ARGS / RELEASE_GN_ARGS / the platform tables above.
+ANDROID_GN_ARGS = f"""
+target_os = "android"
+target_cpu = "{{cpu}}"
+is_official_build = true
+is_debug = false
+
+skia_enable_graphite = true
+skia_use_dawn = true
+skia_use_vulkan = true
+
+skia_use_harfbuzz = true
+skia_use_icu = true
+skia_enable_paragraph = true
+
+skia_enable_svg = true
+skia_enable_skottie = true
+
+skia_use_gl = false
+skia_use_metal = false
+skia_use_direct3d = false
+
+skia_use_system_freetype2 = false
+skia_use_system_harfbuzz = false
+skia_use_system_icu = false
+skia_use_system_expat = false
+skia_use_system_zlib = false
+skia_use_system_libpng = false
+skia_use_system_libwebp = false
+skia_use_system_libjpeg_turbo = false
+skia_use_freetype = true
+skia_use_expat = true
+skia_use_libpng_decode = true
+skia_use_libpng_encode = true
+skia_use_zlib = true
+
+ndk = "{{ndk}}"
+ndk_api = {ANDROID_NDK_API}
+
+skia_enable_pdf = false
+skia_enable_sksl = true
+"""
+
 # Android builds the same library set as Linux.
 LIBS["android"] = list(LIBS["linux"])
 
@@ -346,29 +392,6 @@ PLATFORM_GN_ARGS = {
     skia_use_system_freetype2 = false
     extra_cflags_c = ["-Wno-error"]
     skia_use_partition_alloc = false
-    """,
-
-    # Same configuration as Pulp's tools/build-skia-android.sh (Graphite on
-    # Dawn/Vulkan), plus the PartitionAlloc setting the Linux build needs.
-    # `ndk` is added in generate_gn_args from ANDROID_NDK_HOME.
-    "android": f"""
-    target_os = "android"
-    skia_use_vulkan = true
-    skia_use_dawn = true
-    skia_use_gl = false
-    skia_use_metal = false
-    skia_use_direct3d = false
-    skia_use_freetype = true
-    skia_use_system_freetype2 = false
-    ndk_api = {ANDROID_NDK_API}
-    skia_use_harfbuzz = true
-    skia_enable_paragraph = true
-    skia_enable_sksl = true
-    skia_use_libpng_decode = true
-    skia_use_libpng_encode = true
-    skia_use_zlib = true
-    extra_cflags_c = ["-Wno-error"]
-    skia_use_partition_alloc = false
     """
 }
 
@@ -471,15 +494,6 @@ PLATFORM_GN_ARGS_CPU = {
     skia_use_freetype = true
     skia_use_system_freetype2 = false
     extra_cflags_c = ["-Wno-error"]
-    skia_use_partition_alloc = false
-    """,
-
-    "android": f"""
-    target_os = "android"
-    skia_use_vulkan = false
-    skia_use_dawn = false
-    skia_use_gl = false
-    ndk_api = {ANDROID_NDK_API}
     skia_use_partition_alloc = false
     """
 }
@@ -660,6 +674,9 @@ class SkiaBuildScript:
 
     def generate_gn_args(self, arch: str):
         output_dir = TMP_DIR / f"{self.platform}_{self.config}_{arch}_{self.variant}"
+        if self.platform == "android":
+            self.generate_android_gn_args(arch, output_dir)
+            return
         gn_args = BASIC_GN_ARGS
 
         # Use CPU or GPU platform-specific args based on variant
@@ -823,26 +840,32 @@ class SkiaBuildScript:
             gn_args += f"target_cpu = \"{'arm64' if arch == 'arm64' else 'x64'}\"\n"
         elif self.platform == "wasm":
             gn_args += "target_cpu = \"wasm\"\n"
-        elif self.platform == "android":
-            ndk = os.environ.get("ANDROID_NDK_HOME", "")
-            revision = ""
-            try:
-                for line in (Path(ndk) / "source.properties").read_text().splitlines():
-                    if line.startswith("Pkg.Revision"):
-                        revision = line.split("=", 1)[1].strip()
-            except OSError:
-                pass
-            if revision != ANDROID_NDK_REVISION:
-                colored_print(f"ANDROID_NDK_HOME={ndk!r} is NDK {revision or 'unknown'}, "
-                              f"expected {ANDROID_NDK_REVISION}", Colors.FAIL)
-                sys.exit(1)
-            # RELEASE_GN_ARGS turns GL on after the platform block; Pulp's build
-            # (and Android's Graphite-on-Vulkan design) leaves it off.
-            gn_args += f'target_cpu = "{ANDROID_ABI_CPU[arch]}"\nndk = "{ndk}"\nskia_use_gl = false\n'
 
         colored_print(f"Generating gn args for {self.platform} {arch} ({self.variant}) settings:", Colors.OKBLUE)
         colored_print(f"{gn_args}", Colors.OKGREEN)
 
+        subprocess.run(["./bin/gn", "gen", str(output_dir), f"--args={gn_args}"], check=True)
+
+    def generate_android_gn_args(self, arch: str, output_dir: Path):
+        ndk = os.environ.get("ANDROID_NDK_HOME", "")
+        revision = ""
+        try:
+            for line in (Path(ndk) / "source.properties").read_text().splitlines():
+                if line.startswith("Pkg.Revision"):
+                    revision = line.split("=", 1)[1].strip()
+        except OSError:
+            pass
+        # A preview NDK reports "30.0.14904198-beta1": the pin is the numeric part.
+        if revision.split("-")[0] != ANDROID_NDK_REVISION:
+            colored_print(f"ANDROID_NDK_HOME={ndk!r} is NDK {revision or 'unknown'}, "
+                          f"expected {ANDROID_NDK_REVISION}", Colors.FAIL)
+            sys.exit(1)
+        gn_args = ANDROID_GN_ARGS.format(cpu=ANDROID_ABI_CPU[arch], ndk=ndk)
+        # ccache only speeds compiles up; it does not change the objects.
+        if shutil.which("ccache"):
+            gn_args += '\ncc_wrapper = "ccache"\n'
+        colored_print(f"Generating gn args for android {arch}:", Colors.OKBLUE)
+        colored_print(gn_args, Colors.OKGREEN)
         subprocess.run(["./bin/gn", "gen", str(output_dir), f"--args={gn_args}"], check=True)
 
     def build_skia(self, arch: str):
@@ -1361,6 +1384,8 @@ class SkiaBuildScript:
             colored_print(f"Warning: Failed to download GN: {e}", Colors.WARNING)
 
     def generate_gn_args_summary(self, arch: str):
+        if self.platform == "android":
+            return ANDROID_GN_ARGS.format(cpu=ANDROID_ABI_CPU[arch], ndk="$ANDROID_NDK_HOME").strip()
         if self.variant == "cpu":
             gn_args = BASIC_GN_ARGS + PLATFORM_GN_ARGS_CPU[self.platform] + CPU_ONLY_GN_ARGS
         else:

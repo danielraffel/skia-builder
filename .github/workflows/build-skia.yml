@@ -274,7 +274,7 @@ jobs:
           unzip -q "${RUNNER_TEMP}/${NDK_ZIP}" -d "${RUNNER_TEMP}/ndk"
           rm -f "${RUNNER_TEMP}/${NDK_ZIP}"
           ndk="$(echo "${RUNNER_TEMP}"/ndk/android-ndk-*)"
-          grep -q "^Pkg.Revision = ${NDK_REVISION}$" "$ndk/source.properties"
+          grep -Eq "^Pkg.Revision = ${NDK_REVISION//./\\.}(-beta1)?$" "$ndk/source.properties"
           echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
           "$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version
 
@@ -528,6 +528,13 @@ jobs:
       - name: Check Linux archive links without BackupRefPtr
         if: steps.check.outputs.should_build == 'true' && matrix.platform == 'linux' && !inputs.test_mode
         shell: bash
+        run: python3 tools/check_linux_archive.py "${{ steps.archive.outputs.name }}.zip"
+
+      - name: Check Android archive links without BackupRefPtr
+        if: steps.check.outputs.should_build == 'true' && matrix.platform == 'android' && !inputs.test_mode
+        shell: bash
+        env:
+          NM: ${{ env.ANDROID_NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm
         run: python3 tools/check_linux_archive.py "${{ steps.archive.outputs.name }}.zip"
 
       - name: Smoke-check Windows archive

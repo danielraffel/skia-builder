@@ -21,7 +21,7 @@ class NdkReceiptTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.ndk = self.tmp / "ndk"
         (self.ndk / "toolchains/llvm/prebuilt/linux-x86_64/bin").mkdir(parents=True)
-        (self.ndk / "source.properties").write_text("Pkg.Desc = Android NDK\nPkg.Revision = 30.0.14904198\n")
+        (self.ndk / "source.properties").write_text("Pkg.Desc = Android NDK\nPkg.Revision = 30.0.14904198-beta1\n")
         self.ninja = self.tmp / "toolchain.ninja"
         bin_dir = self.ndk / "toolchains/llvm/prebuilt/linux-x86_64/bin"
         self.ninja.write_text(f"rule cc\n  command = ccache {bin_dir}/clang -c $in -o $out\n"
@@ -53,7 +53,7 @@ class NdkReceiptTests(unittest.TestCase):
         archive = self.archive()
         receipt = self.receipt(archive)
         self.assertEqual(ndk_tool.validate_receipt(receipt, archive), [])
-        self.assertEqual(receipt["ndk"], {"revision": "30.0.14904198"})
+        self.assertEqual(receipt["ndk"], {"revision": "30.0.14904198", "pkg_revision": "30.0.14904198-beta1"})
         self.assertEqual(receipt["cpp_abi"]["arm64-v8a"]["stdlib_version"], "210000")
         self.assertEqual(receipt["observed"]["target_triple"], "aarch64-linux-android26")
 

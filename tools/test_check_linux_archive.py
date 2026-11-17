@@ -72,5 +72,26 @@ class GnArgsTests(unittest.TestCase):
         self.assertNotIn("skia_use_partition_alloc", build_skia.RELEASE_GN_ARGS)
 
 
+class AndroidTests(unittest.TestCase):
+    def test_android_archives_are_gated_by_name(self) -> None:
+        self.assertTrue(gate.NAME_RE.match("skia-build-android-arm64-v8a-gpu-release.zip"))
+        self.assertTrue(gate.NAME_RE.match("skia-build-android-x86_64-gpu-release.zip"))
+        self.assertTrue(gate.NAME_RE.match("skia-build-linux-x64-gpu-release.zip"))
+        self.assertFalse(gate.NAME_RE.match("skia-build-win-x64-gpu-release.zip"))
+
+    def test_android_gn_args_are_pulps_and_not_the_shared_release_args(self) -> None:
+        args = build_skia.ANDROID_GN_ARGS.format(cpu="arm64", ndk="/ndk")
+        for line in ('target_os = "android"', 'target_cpu = "arm64"', 'ndk = "/ndk"', "ndk_api = 26",
+                     "skia_enable_graphite = true", "skia_use_dawn = true", "skia_use_vulkan = true",
+                     "skia_use_gl = false", "skia_enable_pdf = false", "skia_enable_sksl = true"):
+            self.assertIn(line, args.splitlines())
+        # Nothing the shared tables add: they would make the asset differ from Pulp's build.
+        for forbidden in ("skia_use_partition_alloc", "skia_use_libwebp", "skia_use_xps", "cc = "):
+            self.assertNotIn(forbidden, args)
+
+    def test_android_cpu_mapping(self) -> None:
+        self.assertEqual(build_skia.ANDROID_ABI_CPU, {"arm64-v8a": "arm64", "x86_64": "x64"})
+
+
 if __name__ == "__main__":
     unittest.main()

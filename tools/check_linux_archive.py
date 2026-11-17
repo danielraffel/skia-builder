@@ -11,11 +11,13 @@ consumer's link fails with undefined references to it. The Linux builds turn
 For every ``skia-build-linux-*.zip`` given, this lists the static libraries'
 symbols with ``nm`` and fails when any library references a
 ``RawPtrBackupRefImpl`` symbol that no library in the same archive defines.
+Android archives are checked the same way (set NM to the NDK's llvm-nm).
 Archives for other platforms are skipped.
 """
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -23,7 +25,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-NAME_RE = re.compile(r"^skia-build-linux-[a-z0-9_]+-[a-z0-9]+-(release|debug)\.zip$")
+NAME_RE = re.compile(r"^skia-build-(linux|android)-[a-z0-9_-]+-[a-z0-9]+-(release|debug)\.zip$")
 FORBIDDEN = re.compile(r"RawPtrBackupRefImpl")
 UNDEFINED_TYPES = {"U", "w", "v"}
 
@@ -68,7 +70,7 @@ def check_archive(path: Path) -> list[str]:
                 continue
             target = Path(temporary) / member.replace("/", "_")
             target.write_bytes(archive.read(member))
-            result = subprocess.run(["nm", "-C", str(target)], capture_output=True, text=True)
+            result = subprocess.run([os.environ.get("NM", "nm"), "-C", str(target)], capture_output=True, text=True)
             if result.returncode != 0:
                 return [f"{path.name}: nm failed on {member}: {result.stderr.strip()[-300:]}"]
             libraries[member] = result.stdout

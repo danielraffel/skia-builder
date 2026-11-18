@@ -68,19 +68,37 @@ def content_addressed_name(archive_name: str, data: bytes) -> str:
     return f"{stem}.linux-toolchain.sha256-{hashlib.sha256(data).hexdigest()}.json"
 
 
+SHT_NOBITS = 8
+SHF_EXECINSTR = 0x4
+
+
 def elf_facts(data: bytes) -> dict[str, object] | None:
-    """Class, machine and ``.comment`` strings of a little-endian ELF64 object."""
+    """Machine, ``.comment`` strings and whether a little-endian ELF64 object holds code.
+
+    An object with no non-empty executable section, such as ICU's embedded
+    ``icudtl.dat``, was assembled from data rather than compiled, so it has
+    no compiler to record.  One whose section table cannot be read is
+    treated as holding code, so it cannot escape the ``.comment`` rule.
+    """
     if data[:4] != b"\x7fELF" or len(data) < 64 or data[4] != 2 or data[5] != 1:
         return None
     machine = struct.unpack("<H", data[18:20])[0]
     shoff = struct.unpack("<Q", data[40:48])[0]
     shentsize, shnum, shstrndx = struct.unpack("<HHH", data[58:64])
     comments: list[str] = []
+    code = True
     if shoff and shnum and shentsize >= 64 and shoff + shentsize * shnum <= len(data):
         def header(index: int) -> tuple[int, int, int]:
             base = shoff + index * shentsize
             name, _type, _flags, _addr, offset, size = struct.unpack("<IIQQQQ", data[base:base + 40])
             return name, offset, size
+        code = False
+        for index in range(shnum):
+            base = shoff + index * shentsize
+            kind, flags = struct.unpack("<IQ", data[base + 4:base + 16])
+            size = struct.unpack("<Q", data[base + 32:base + 40])[0]
+            if flags & SHF_EXECINSTR and size and kind != SHT_NOBITS:
+                code = True
         if shstrndx < shnum:
             _n, str_offset, str_size = header(shstrndx)
             names = data[str_offset:str_offset + str_size]
@@ -91,7 +109,7 @@ def elf_facts(data: bytes) -> dict[str, object] | None:
                     blob = data[offset:offset + size]
                     comments = [part.decode("utf-8", "replace") for part in blob.split(b"\0") if part]
     return {"machine": apple_archive.ELF_MACHINES.get(machine, f"e_machine-{machine}"),
-            "comments": sorted(set(comments))}
+            "comments": sorted(set(comments)), "code": code}
 
 
 def observed_elf(archive: Path) -> dict[str, object]:
@@ -113,7 +131,7 @@ def observed_elf(archive: Path) -> dict[str, object]:
                     non_elf += 1
                     continue
                 machines[facts["machine"]] += 1
-                if not facts["comments"]:
+                if facts["code"] and not facts["comments"]:
                     without_comment += 1
                 for comment in facts["comments"]:
                     comments[comment] += 1

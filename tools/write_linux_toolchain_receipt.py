@@ -312,36 +312,49 @@ def validate_receipt(receipt: dict, archive: Path | None = None) -> list[str]:
         if "error" in rules or not rules.get("cxx"):
             problems.append(f"{path}: no cxx command recorded")
     observed = receipt.get("observed_elf")
-    if observed is not None:
-        arch = ARCH_NAMES.get(str(target_arch), "")
-        machines = observed.get("machines") or {}
-        if not machines:
-            problems.append("the archive holds no ELF object member")
-        if arch and set(machines) - {arch}:
-            problems.append(f"objects for {sorted(set(machines) - {arch})} in a {arch} cell")
-        clang = {match.group(1) for text in (observed.get("comments") or {})
-                 for match in [CLANG_BANNER_RE.search(text)] if match}
-        if not clang:
-            problems.append("no object member records the clang that built it")
-        elif versions and clang != versions:
-            problems.append(f"objects were built by clang {sorted(clang)}, receipt names {sorted(versions)}")
-    observed_symbols = receipt.get("observed") or {}
-    if observed is not None:
-        for key in ("max_glibc_version", "max_glibcxx_version"):
-            if not re.fullmatch(r"\d+(\.\d+)+", str(observed_symbols.get(key, ""))):
-                problems.append(f"observed.{key} was not measured"
-                                + (f" (link probe: {observed_symbols['link_error']})"
-                                   if observed_symbols.get("link_error") else ""))
-        host = str((receipt.get("libc") or {}).get("version", ""))
-        needed = str(observed_symbols.get("max_glibc_version", ""))
-        if re.fullmatch(r"\d+(\.\d+)+", needed) and re.fullmatch(r"\d+\.\d+", host) \
-                and tuple(map(int, needed.split("."))) > tuple(map(int, host.split("."))):
-            problems.append(f"objects need glibc {needed}, newer than the producer's {host}")
+    if not isinstance(observed, dict):
+        problems.append("observed_elf is required")
+        observed = {}
+    required_observed = ("libraries", "machines", "comments", "members_without_comment",
+                         "members_not_elf")
+    for key in required_observed:
+        if key not in observed:
+            problems.append(f"observed_elf.{key} was not measured")
+    arch = ARCH_NAMES.get(str(target_arch), "")
+    machines = observed.get("machines") or {}
+    if not machines:
+        problems.append("the archive holds no ELF object member")
+    if arch and set(machines) - {arch}:
+        problems.append(f"objects for {sorted(set(machines) - {arch})} in a {arch} cell")
+    if observed.get("members_not_elf", 0):
+        problems.append(f"archive has {observed['members_not_elf']} member(s) that are not ELF")
+    if observed.get("members_without_comment", 0):
+        problems.append(f"archive has {observed['members_without_comment']} ELF member(s) without .comment")
+    clang = {match.group(1) for text in (observed.get("comments") or {})
+             for match in [CLANG_BANNER_RE.search(text)] if match}
+    if not clang:
+        problems.append("no object member records the clang that built it")
+    elif versions and clang != versions:
+        problems.append(f"objects were built by clang {sorted(clang)}, receipt names {sorted(versions)}")
+    observed_symbols = receipt.get("observed")
+    if not isinstance(observed_symbols, dict):
+        problems.append("observed link-probe data is required")
+        observed_symbols = {}
+    for key in ("max_glibc_version", "max_glibcxx_version"):
+        if not re.fullmatch(r"\d+(\.\d+)+", str(observed_symbols.get(key, ""))):
+            problems.append(f"observed.{key} was not measured"
+                            + (f" (link probe: {observed_symbols['link_error']})"
+                               if observed_symbols.get("link_error") else ""))
+    host = str((receipt.get("libc") or {}).get("version", ""))
+    needed = str(observed_symbols.get("max_glibc_version", ""))
+    if re.fullmatch(r"\d+(\.\d+)+", needed) and re.fullmatch(r"\d+\.\d+", host) \
+            and tuple(map(int, needed.split("."))) > tuple(map(int, host.split("."))):
+        problems.append(f"objects need glibc {needed}, newer than the producer's {host}")
     if archive is not None:
         actual = apple.sha256_file(archive)
         if (receipt.get("archive") or {}).get("sha256") != actual:
             problems.append(f"receipt archive sha256 != {actual}")
-        if observed is not None and observed != observed_elf(archive):
+        if observed != observed_elf(archive):
             problems.append("observed_elf does not match the archive")
     return problems
 
@@ -366,11 +379,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.check:
-        receipt = json.loads(args.output.read_text(encoding="utf-8"))
+        data = args.output.read_bytes()
+        receipt = json.loads(data.decode("utf-8"))
         problems = validate_receipt(receipt, args.archive)
         match = CONTENT_ADDRESSED_RE.search(args.output.name)
-        if match and match.group(1) != apple.sha256_file(args.output):
+        digest = hashlib.sha256(data).hexdigest()
+        if not match:
+            problems.append(f"{args.output.name} is not a content-addressed Linux receipt name")
+        elif match.group(1) != digest:
             problems.append(f"{args.output.name} does not carry its own sha256")
+        if args.archive and args.output.name != content_addressed_name(args.archive.name, data):
+            problems.append(f"{args.output.name} is not the exact content-addressed name for {args.archive.name}")
         for problem in problems:
             print(f"linux-toolchain-receipt: {problem}", file=sys.stderr)
         if problems:

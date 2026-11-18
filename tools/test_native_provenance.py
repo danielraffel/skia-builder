@@ -198,6 +198,28 @@ class LinuxReceiptTests(unittest.TestCase):
         del receipt["observed"]["max_glibcxx_version"]
         self.assertTrue(any("max_glibcxx_version" in p for p in linux_tool.validate_receipt(receipt, archive)))
 
+    def test_object_measurements_are_required_and_complete(self):
+        archive = self.archive()
+        receipt = self.receipt(archive)
+        receipt["observed_elf"]["members_not_elf"] = 1
+        receipt["observed_elf"]["members_without_comment"] = 1
+        receipt.pop("observed")
+        receipt.pop("observed_elf")
+        problems = linux_tool.validate_receipt(receipt, archive)
+        self.assertTrue(any("observed_elf is required" in p for p in problems), problems)
+        self.assertTrue(any("observed link-probe data is required" in p for p in problems), problems)
+
+    def test_non_elf_and_commentless_members_are_refused(self):
+        archive = self.tmp / "skia-build-linux-x64-gpu-release.zip"
+        write_zip(archive, [
+            ("build/linux-gpu/lib/libskia.a", gnu_ar([("bad.o", b"not an elf")])),
+            ("build/linux-gpu/lib/libdawn_combined.a", gnu_ar([("no-comment.o", elf(comments=()))])),
+        ])
+        receipt = self.receipt(archive)
+        problems = linux_tool.validate_receipt(receipt, archive)
+        self.assertTrue(any("not ELF" in p for p in problems), problems)
+        self.assertTrue(any("without .comment" in p for p in problems), problems)
+
     def test_an_unknown_compiler_banner_is_refused(self):
         archive = self.archive()
         problems = linux_tool.validate_receipt(self.receipt(archive, clang="error: exit 1"), archive)
@@ -224,6 +246,13 @@ class LinuxReceiptTests(unittest.TestCase):
         staged.write_bytes(data)
         self.assertEqual(linux_tool.main([str(staged), "--archive", str(archive), "--check"]), 0)
         staged.write_bytes(data.replace(b"2.35", b"2.36", 1))
+        self.assertEqual(linux_tool.main([str(staged), "--archive", str(archive), "--check"]), 1)
+
+    def test_cli_rejects_a_non_content_addressed_filename(self):
+        archive = self.archive()
+        receipt = self.receipt(archive)
+        staged = self.tmp / "linux-toolchain.json"
+        staged.write_bytes(linux_tool.apple.canonical_bytes(receipt))
         self.assertEqual(linux_tool.main([str(staged), "--archive", str(archive), "--check"]), 1)
 
 
@@ -288,6 +317,31 @@ class WindowsStagingTests(unittest.TestCase):
             archive = self.archive(tmp, self.receipt(), machine=0xAA64)
             path, _ = self.stage(archive, tmp / "assets")
             self.assertEqual(self.check(archive, path), 1)
+
+    def test_unknown_members_are_refused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tmp = pathlib.Path(temporary)
+            receipt = self.receipt()
+            archive = tmp / "skia-build-win-x64-gpu-release.zip"
+            write_zip(archive, [
+                ("build/win-gpu/msvc-toolchain.json", json.dumps(receipt, indent=2).encode()),
+                ("build/win-gpu/lib/Release/x64/skia.lib",
+                 gnu_ar([("a.obj", coff(0x8664)), ("unknown.obj", b"not coff")])),
+            ])
+            path, _ = self.stage(archive, tmp / "assets")
+            self.assertEqual(self.check(archive, path), 1)
+
+    def test_staged_target_must_match_requested_arch_and_configuration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tmp = pathlib.Path(temporary)
+            archive = self.archive(tmp, self.receipt())
+            _, staged = self.stage(archive, tmp / "assets")
+            staged["target"]["architectures"] = ["arm64"]
+            staged["target"]["configuration"] = "Debug"
+            problems = stage_tool.problems_for(archive, staged, archive_receipt_bytes(archive),
+                                                "x64", "Release")
+            self.assertTrue(any("target.architectures" in p for p in problems), problems)
+            self.assertTrue(any("target.configuration" in p for p in problems), problems)
 
     def test_a_receipt_that_proves_nothing_is_not_staged(self):
         with tempfile.TemporaryDirectory() as temporary:

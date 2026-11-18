@@ -72,20 +72,29 @@ def archive_receipt(archive: Path) -> bytes:
         return handle.read(names[0])
 
 
-def observed_machines(archive: Path) -> dict[str, int]:
+def observed_member_machines(archive: Path) -> tuple[dict[str, int], int]:
     counts: dict[str, int] = {}
+    undecodable = 0
     with zipfile.ZipFile(archive) as handle:
         for info in handle.infolist():
             if info.is_dir() or not info.filename.lower().endswith(".lib"):
                 continue
             data = handle.read(info)
             if not data.startswith(apple_archive.AR_MAGIC):
+                undecodable += 1
                 continue
             for member in apple_archive.parse_archive(data).members:
                 machine = apple_archive.object_arch(member.data)
                 if machine:
                     counts[machine] = counts.get(machine, 0) + 1
-    return dict(sorted(counts.items()))
+                else:
+                    undecodable += 1
+    return dict(sorted(counts.items())), undecodable
+
+
+def observed_machines(archive: Path) -> dict[str, int]:
+    """Return recognized COFF member machines (for callers that only need counts)."""
+    return observed_member_machines(archive)[0]
 
 
 def run_banner(program: str) -> str:
@@ -130,7 +139,8 @@ def derive(archive: Path, source: dict, source_bytes: bytes, arch: str, configur
         "windows_sdk": {"version": producer.get("windows_sdk_version", "unknown")},
         "runner_image": {"name": os.environ.get("ImageOS", "local"),
                          "version": os.environ.get("ImageVersion", "local")},
-        "observed": {"coff_machines": observed_machines(archive)},
+        "observed": {"coff_machines": observed_machines(archive),
+                     "undecodable_members": observed_member_machines(archive)[1]},
         "source_receipt": {"member": MEMBER_NAME, "sha256": hashlib.sha256(source_bytes).hexdigest()},
     }
 
@@ -161,6 +171,11 @@ def problems_for(archive: Path, staged: dict, source_bytes: bytes, arch: str,
         problems.append("staged archive sha256 does not match the archive")
     if (staged.get("source_receipt") or {}).get("sha256") != hashlib.sha256(source_bytes).hexdigest():
         problems.append("staged source_receipt is not the receipt inside the archive")
+    target = staged.get("target") or {}
+    if target.get("architectures") != [arch]:
+        problems.append(f"target.architectures {target.get('architectures')!r} != {[arch]!r}")
+    if target.get("configuration") != configuration:
+        problems.append(f"target.configuration {target.get('configuration')!r} != {configuration!r}")
     for name in ("compiler", "linker", "archiver"):
         row = (staged.get("compiler") or {}).get("cxx") if name == "compiler" else staged.get(name)
         row = row or {}
@@ -170,9 +185,17 @@ def problems_for(archive: Path, staged: dict, source_bytes: bytes, arch: str,
         problems.append("linker.version is not a link.exe banner")
     if not LIB_BANNER_RE.search(str((staged.get("archiver") or {}).get("version", ""))):
         problems.append("archiver.version is not a lib.exe banner")
-    machines = (staged.get("observed") or {}).get("coff_machines") or {}
-    if machines != observed_machines(archive):
+    observed = staged.get("observed") or {}
+    machines = observed.get("coff_machines") or {}
+    actual_machines, actual_undecodable = observed_member_machines(archive)
+    if machines != actual_machines:
         problems.append("observed.coff_machines does not match the archive")
+    if "undecodable_members" not in observed:
+        problems.append("observed.undecodable_members was not measured")
+    elif observed.get("undecodable_members") != actual_undecodable:
+        problems.append("observed.undecodable_members does not match the archive")
+    if actual_undecodable:
+        problems.append(f"archive has {actual_undecodable} undecodable object member(s)")
     if not machines:
         problems.append("the archive holds no COFF object member")
     elif set(machines) - {ARCH_MACHINES.get(arch.lower(), arch.lower())}:

@@ -7,6 +7,29 @@ from pathlib import Path
 
 EC_MARKER = '"--cxx_flags=/arm64EC"'
 ARCHIVE_FLAG_MARKER = "      combine_obj_cmd.extend(args.ld_flags)"
+PARALLEL_MARKER = '  # Dawn occupies one job in the parent Ninja build.'
+
+
+def _patch_nested_ninja_share(build_dawn: Path) -> bool:
+    """Keep nested compilation within the single parent Ninja action slot."""
+    content = build_dawn.read_text(encoding="utf-8")
+    if PARALLEL_MARKER in content:
+        return False
+    needle = '  build_cmd = [ninja_exe, "-C", build_dir, "-dkeepdepfile"] + build_targets\n'
+    replacement = '''  build_cmd = [ninja_exe, "-C", build_dir, "-dkeepdepfile"]
+  # Dawn occupies one job in the parent Ninja build.
+  # Giving both Ninjas the full share would exceed the governor's budget.
+  parallel = env.get("CMAKE_BUILD_PARALLEL_LEVEL")
+  if parallel is not None:
+    if not parallel.isascii() or not parallel.isdigit() or int(parallel) < 1:
+      raise ValueError("CMAKE_BUILD_PARALLEL_LEVEL must be a positive integer")
+    build_cmd.extend(["-j", "1"])
+  build_cmd += build_targets
+'''
+    if content.count(needle) != 1:
+        raise RuntimeError("Dawn nested Ninja command anchor not found exactly once")
+    build_dawn.write_text(content.replace(needle, replacement, 1), encoding="utf-8")
+    return True
 
 
 def _patch_cmake_cpu_map(cmake_utils: Path) -> bool:
@@ -57,6 +80,7 @@ def apply_patch(skia_dir: Path) -> bool:
     changed = _patch_skia_args(skia_gni)
     changed = _patch_cmake_cpu_map(cmake_utils) or changed
     changed = _patch_cmake_archive_flags(cmake_utils) or changed
+    changed = _patch_nested_ninja_share(skia_dir / "third_party" / "dawn" / "build_dawn.py") or changed
     if EC_MARKER in content:
         return changed
 

@@ -452,6 +452,8 @@ class SkiaBuildScript:
         self.branch = None
         self.variant = "gpu"
         self.target = "all"  # device, simulator, or all
+        self.windows_vector_raster = False
+        self.vector_raster_outputs = {}
 
     def parse_arguments(self):
         parser = argparse.ArgumentParser(description="Build Skia for macOS, iOS, visionOS, Windows, Linux and WebAssembly")
@@ -470,6 +472,8 @@ class SkiaBuildScript:
                            help="Create a zip archive containing all platform libraries")
         parser.add_argument("--strip-arm64e", action="store_true",
                            help="Strip arm64e slice from iOS/visionOS libraries (reduces size)")
+        parser.add_argument("--windows-vector-raster", action="store_true",
+                           help="Experimental pinned-Clang SkOpts unit for Windows ARM slices")
         args = parser.parse_args()
 
         if args.platform == "xcframework":
@@ -495,6 +499,10 @@ class SkiaBuildScript:
         self.create_zip_all = args.zip_all
         self.strip_arm64e = args.strip_arm64e
         self.validate_archs()
+        self.windows_vector_raster = args.windows_vector_raster
+        if self.windows_vector_raster and (
+                self.platform != 'win' or not set(self.archs) <= {'arm64', 'arm64ec'}):
+            parser.error('--windows-vector-raster requires explicit Windows arm64/arm64ec slices')
 
     def get_default_archs(self):
         if self.platform == "mac":
@@ -788,6 +796,14 @@ class SkiaBuildScript:
         
         # Construct the ninja command with all library targets
         ninja_command = ["ninja", "-C", str(output_dir)] + libs_to_build
+        # A build governor exports its granted share for nested CMake builds.
+        # Ninja does not consume that variable itself; honor the same share
+        # here so the outer Skia build cannot outrun the governed allocation.
+        parallel_level = os.environ.get('CMAKE_BUILD_PARALLEL_LEVEL')
+        if parallel_level is not None:
+            if not parallel_level.isascii() or not parallel_level.isdecimal() or int(parallel_level) < 1:
+                raise ValueError('CMAKE_BUILD_PARALLEL_LEVEL must be a positive integer')
+            ninja_command += ['-j', parallel_level]
 
         # Run the ninja command
         try:
@@ -798,6 +814,22 @@ class SkiaBuildScript:
             print(f"Ninja command: {' '.join(ninja_command)}")
             print(f"Error details: {e}")
             sys.exit(1)
+
+        if self.windows_vector_raster:
+            llvm_root = os.environ.get('LLVM_PATH')
+            if not llvm_root:
+                raise RuntimeError('LLVM_PATH must identify the pinned LLVM installation')
+            # Keep Ninja's MSVC output intact. A unique candidate also keeps
+            # previous compile/link evidence across incremental invocations.
+            candidate_dir = output_dir / f'vector-raster-{time.time_ns()}'
+            candidate_dir.mkdir()
+            candidate = candidate_dir / 'skia.lib'
+            subprocess.run([
+                sys.executable, str(Path(__file__).parent / 'tools/build_windows_vector_raster.py'),
+                '--build-dir', str(output_dir), '--source-dir', str(SKIA_SRC_DIR),
+                '--original', str(output_dir / 'skia.lib'), '--output', str(candidate),
+                '--arch', arch, '--llvm-bin', str(Path(llvm_root) / 'bin')], check=True)
+            self.vector_raster_outputs[arch] = candidate
 
     def get_ninja_target_name(self, lib: str) -> str:
         """Return the Ninja target name for a packaged library filename."""
@@ -839,9 +871,15 @@ class SkiaBuildScript:
         # Copy the libraries
         for lib in LIBS[self.platform]:
             src_file = src_dir / self.get_built_library_name(lib)
+            if lib == 'skia.lib' and arch in self.vector_raster_outputs:
+                src_file = self.vector_raster_outputs[arch]
             dest_file = dest_dir / lib
             if src_file.exists():
                 shutil.copy2(str(src_file), str(dest_file))
+                if lib == 'skia.lib' and arch in self.vector_raster_outputs:
+                    for suffix in ('.raster-object.json', '.compile.json',
+                                   '.source-inputs.json', '.source-patches.diff'):
+                        shutil.copy2(src_file.with_suffix(suffix), dest_file.with_suffix(suffix))
                 colored_print(f"Copied {lib} to {dest_dir}", Colors.OKGREEN)
                 # Strip arm64e if requested (iOS/visionOS only)
                 if self.strip_arm64e and self.platform in ["ios", "visionos"]:
@@ -1433,6 +1471,8 @@ class SkiaBuildScript:
                 subprocess.run(["git", "apply", str(patch_file)], check=True)
                 colored_print(f"  Applied {patch_file.name} successfully.", Colors.OKGREEN)
             except subprocess.CalledProcessError as e:
+                if self.windows_vector_raster:
+                    raise
                 colored_print(f"  Warning: Failed to apply {patch_file.name}: {e}", Colors.WARNING)
 
         # Apply Python patch scripts (for complex patches that can't use git diff)
@@ -1447,6 +1487,8 @@ class SkiaBuildScript:
                 subprocess.run([sys.executable, str(patch_script), str(SKIA_SRC_DIR)], check=True)
                 colored_print(f"  Ran {patch_script.name} successfully.", Colors.OKGREEN)
             except subprocess.CalledProcessError as e:
+                if self.windows_vector_raster:
+                    raise
                 colored_print(f"  Warning: Failed to run {patch_script.name}: {e}", Colors.WARNING)
 
     def run(self):

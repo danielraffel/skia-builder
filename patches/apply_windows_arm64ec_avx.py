@@ -8,9 +8,15 @@ from pathlib import Path
 def _patch_features(path: Path) -> bool:
     content = path.read_text(encoding="utf-8")
     old = "#if defined(__i386) || defined(_M_IX86) ||  defined(__x86_64__) || defined(_M_X64)"
-    new = old + " && !defined(_M_ARM64EC)"
+    # clang-cl ARM64EC defines __x86_64__ as well as _M_X64. Exclude EC
+    # from the entire disjunction, not only the final MSVC macro term.
+    new = "#if (" + old.removeprefix("#if ") + ") && !defined(_M_ARM64EC)"
     if new in content:
         return False
+    legacy = old + " && !defined(_M_ARM64EC)"
+    if legacy in content:
+        path.write_text(content.replace(legacy, new, 1), encoding="utf-8")
+        return True
     if old not in content:
         raise RuntimeError("SkFeatures x86 detection anchor not found")
     path.write_text(content.replace(old, new, 1), encoding="utf-8")

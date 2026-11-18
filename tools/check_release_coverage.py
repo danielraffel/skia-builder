@@ -14,7 +14,7 @@ of those `<name>.zip` files appears in the `create-release` step's `files:`
 block. A lane that is built but not released fails the check.
 
 Run locally:  python3 tools/check_release_coverage.py
-CI:           .github/workflows/lint.yml on any PR touching build-skia.yml
+CI:           .github/workflows/lint.yml on every PR
 """
 from __future__ import annotations
 

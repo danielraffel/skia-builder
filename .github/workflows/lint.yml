@@ -11,6 +11,8 @@ on:
       - '.github/workflows/build-skia.yml'
       - '.github/workflows/watch-skia.yml'
       - '.github/workflows/lint.yml'
+      - 'patches/apply_dawn_macos_msl_version.py'
+      - 'patches/test_apply_dawn_macos_msl_version.py'
       - 'patches/apply_dawn_ios_visionos.py'
       - 'patches/test_apply_dawn_ios_visionos.py'
       - 'patches/apply_dawn_windows_arm64_vector_stl.py'
@@ -89,6 +91,7 @@ jobs:
       # Every active build-matrix lane must be uploaded by create-release.
       # Catches the chrome/m150 regression: a lane built but never released.
       - run: python3 tools/check_release_coverage.py
+      - run: python3 patches/test_apply_dawn_macos_msl_version.py
       - run: python3 patches/test_apply_dawn_ios_visionos.py
       - run: python3 patches/test_apply_dawn_windows_arm64_vector_stl.py
       - run: python3 tools/test_skia_release_lock.py

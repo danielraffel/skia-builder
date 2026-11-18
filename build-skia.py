@@ -165,13 +165,12 @@ GPU_LIBS = {
     "linux": ["libdawn_combined.a"],
 }
 
-# Patch scripts that change sources only a Windows slice needs.  They run for
-# Windows targets only: every other platform must build, and package, Skia
-# exactly as upstream ships it.  (apply_windows_arm64ec_avx.py, for example,
-# rewrites include/private/SkFeatures.h, which every archive packages.)  Any
-# patches/apply_*.py whose name mentions Windows must be listed here; the test
-# in tools/test_patch_script_platforms.py enforces that.
+# Source patches are scoped to the platform slices that need them. Windows
+# feature guards also change packaged headers, so non-Windows slices must not
+# inherit those edits. The macOS compiler fix changes Dawn's Metal backend only.
+# tools/test_patch_script_platforms.py verifies the platform selection.
 PATCH_SCRIPT_PLATFORMS = {
+    "apply_dawn_macos_msl_version.py": {"mac"},
     "apply_dawn_windows_arm64_vector_stl.py": {"win"},
     "apply_skia_windows_arm64ec_archive_flags.py": {"win"},
     "apply_windows_arm64ec_avx.py": {"win"},
@@ -1447,6 +1446,10 @@ class SkiaBuildScript:
                 subprocess.run([sys.executable, str(patch_script), str(SKIA_SRC_DIR)], check=True)
                 colored_print(f"  Ran {patch_script.name} successfully.", Colors.OKGREEN)
             except subprocess.CalledProcessError as e:
+                # This patch prevents black editors in older-SDK plugin hosts.
+                # A changed Dawn source must stop publication, not ship unfixed.
+                if patch_script.name == "apply_dawn_macos_msl_version.py":
+                    raise
                 colored_print(f"  Warning: Failed to run {patch_script.name}: {e}", Colors.WARNING)
 
     def run(self):

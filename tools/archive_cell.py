@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 
 NAME_RE = re.compile(
-    r"^skia-build-(?P<platform>mac|ios|visionos|linux|win)"
+    r"^skia-build-(?P<platform>mac|ios|visionos|linux|win|android)"
     r"(?:-(?P<target>device|simulator))?"
     r"-(?P<archs>[a-z0-9_]+(?:-[a-z0-9_]+)*)"
     r"-(?P<variant>[a-z0-9]+)-(?P<config>release|debug)\.zip$")
@@ -23,6 +23,7 @@ ARCHS = {
     "visionos": {"arm64"},
     "linux": {"x64", "arm64"},
     "win": {"x64", "arm64", "arm64ec"},
+    "android": {"arm64-v8a", "x86_64"},
 }
 # The universal mac cell builds both slices and lipos them together.
 EXPANSIONS = {("mac", "universal"): ["arm64", "x86_64"]}
@@ -39,8 +40,13 @@ def cell_for_archive(name: str) -> dict[str, object]:
         raise ValueError(f"{name} is not a skia-build-<platform>-...-<variant>-<config>.zip name")
     platform = match["platform"]
     archs: list[str] = []
-    for token in match["archs"].split("-"):
-        archs += EXPANSIONS.get((platform, token), [token])
+    if platform == "android":
+        # An Android cell builds one ABI, and an ABI name such as arm64-v8a
+        # carries its own dash, so the whole field is that one ABI.
+        archs = [match["archs"]]
+    else:
+        for token in match["archs"].split("-"):
+            archs += EXPANSIONS.get((platform, token), [token])
     unknown = sorted(set(archs) - ARCHS[platform])
     if unknown or len(set(archs)) != len(archs):
         raise ValueError(f"{name} names architectures {archs} that are not {platform} architectures")

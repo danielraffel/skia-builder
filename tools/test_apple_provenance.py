@@ -555,6 +555,21 @@ class ArchiveCellTests(unittest.TestCase):
             {"platform": "mac", "target": "simulator", "architectures": ["arm64"],
              "variant": "gpu", "configuration": "Release"}, label="cell"))
 
+    def test_android_names_carry_one_abi(self):
+        for abi in ("arm64-v8a", "x86_64"):
+            name = f"skia-build-android-{abi}-gpu-release.zip"
+            self.assertEqual(archive_cell.cell_for_archive(name),
+                             {"platform": "android", "target": "", "architectures": [abi],
+                              "variant": "gpu", "configuration": "Release"})
+            cell = {"platform": "android", "architectures": [abi], "variant": "gpu",
+                    "configuration": "Release"}
+            self.assertEqual(archive_cell.cell_problems(name, cell, label="cell"), [])
+        for name in ("skia-build-android-arm64-gpu-release.zip",
+                     "skia-build-android-arm64-v8a-x86_64-gpu-release.zip",
+                     "skia-build-android-device-arm64-v8a-gpu-release.zip"):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                archive_cell.cell_for_archive(name)
+
     def test_an_unknown_name_fails_closed(self):
         for name in ("other.zip", "skia-build-linux-riscv64-gpu-release.zip",
                      "skia-build-ios-arm64-gpu-release.zip", "skia-build-mac-device-arm64-gpu-release.zip"):

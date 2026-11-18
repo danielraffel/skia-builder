@@ -729,8 +729,10 @@ jobs:
             echo "::error::the toolchain receipt or legal manifest does not prove what it claims; see the ${{ steps.archive.outputs.name }}-provenance artifact"
             exit 1
           fi
-          python3 tools/write_ndk_toolchain_receipt.py "${receipts[0]}" --archive "$ARCHIVE" --check
-          python3 tools/write_legal_manifest.py "${manifests[0]}" --archive "$ARCHIVE" --check
+          python3 tools/write_ndk_toolchain_receipt.py "${receipts[0]}" --archive "$ARCHIVE" --check \
+            --abi "${{ matrix.arch }}" --configuration "${{ matrix.config || 'Release' }}" --variant "${{ matrix.variant }}"
+          python3 tools/write_legal_manifest.py "${manifests[0]}" --archive "$ARCHIVE" --check \
+            --expect-skia-revision "$SKIA_REVISION" --expect-dawn-revision "$DAWN_REVISION"
 
       - name: Prove Windows provenance assets
         if: steps.check.outputs.should_build == 'true' && runner.os == 'Windows' && matrix.variant == 'gpu' && !inputs.test_mode
@@ -893,10 +895,9 @@ jobs:
             name="$(basename "$cell")"
             # Apple cells are attested by attest-apple.
             case "$name" in
-              skia-build-linux-*|skia-build-win-*) records=required ;;
-              # wasm and Android cells publish no records; their archive is
-              # still attested.
-              skia-build-wasm-*|skia-build-android-*) records=none ;;
+              skia-build-linux-*|skia-build-win-*|skia-build-android-*) records=required ;;
+              # wasm cells publish no records; their archive is still attested.
+              skia-build-wasm-*) records=none ;;
               *) continue ;;
             esac
             if [ "$TEST_MODE" = "true" ]; then
@@ -908,7 +909,7 @@ jobs:
               continue
             fi
             if [ "$records" = required ] && [ ! -d "$cell/provenance-assets" ]; then
-              echo "::error::$name has no provenance records; a Linux or Windows archive is never published unattested"
+              echo "::error::$name has no provenance records; a Linux, Windows or Android archive is never published unattested"
               missing=1
               continue
             fi

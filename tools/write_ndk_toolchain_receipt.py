@@ -31,6 +31,7 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import archive_cell  # noqa: E402
 import write_apple_toolchain_receipt as apple  # noqa: E402
 import write_linux_toolchain_receipt as linux  # noqa: E402
 
@@ -111,8 +112,29 @@ def build_receipt(abi: str, api_level: int, configuration: str, variant: str, nd
     return receipt
 
 
-def validate_receipt(receipt: dict, archive: Path | None = None) -> list[str]:
-    problems: list[str] = []
+def target_problems(target: object, abi: str, configuration: str, variant: str) -> list[str]:
+    """Reasons ``target`` is not exactly the Android cell the caller built."""
+    target = target if isinstance(target, dict) else {}
+    problems = []
+    if abi not in ABI_ELF:
+        problems.append(f"expected ABI {abi!r} is not an Android ABI")
+    expected = {"platform": "android", "architectures": [abi], "configuration": configuration,
+                "variant": variant}
+    for key, want in expected.items():
+        if not want or target.get(key) != want:
+            problems.append(f"target.{key} {target.get(key)!r} != {want!r}")
+    return problems
+
+
+def validate_receipt(receipt: dict, archive: Path, *, abi: str, configuration: str,
+                     variant: str) -> list[str]:
+    """Every reason ``receipt`` does not prove the named Android cell of ``archive``.
+
+    The expected cell is required, and must also be the cell the archive's
+    own name promises.
+    """
+    problems: list[str] = target_problems(receipt.get("target"), abi, configuration, variant)
+    problems += archive_cell.cell_problems(archive.name, receipt.get("target"), label="target")
 
     def walk(value: object, where: str) -> None:
         if isinstance(value, dict):
@@ -166,12 +188,16 @@ def validate_receipt(receipt: dict, archive: Path | None = None) -> list[str]:
     if not compiler.get("gn_toolchain_commands"):
         problems.append("compiler.gn_toolchain_commands is empty")
     observed = receipt.get("observed_elf")
-    if observed is not None:
+    if not isinstance(observed, dict):
+        problems.append("observed_elf is required")
+    else:
         machines = observed.get("machines") or {}
         want = ABI_ELF.get(abi, "")
         if not machines:
             problems.append("the archive holds no ELF object member")
-        if want and set(machines) - {want}:
+        if not want:
+            problems.append(f"no known ELF machine for ABI {abi!r}")
+        elif set(machines) - {want}:
             problems.append(f"objects for {sorted(set(machines) - {want})} in a {abi} cell")
         clang = {m.group(1) for text in (observed.get("comments") or {})
                  for m in [linux.CLANG_BANNER_RE.search(text)] if m}
@@ -179,14 +205,18 @@ def validate_receipt(receipt: dict, archive: Path | None = None) -> list[str]:
             problems.append("no object member records the clang that built it")
         elif versions and clang != versions:
             problems.append(f"objects were built by clang {sorted(clang)}, receipt names {sorted(versions)}")
-        triple = (receipt.get("observed") or {}).get("target_triple", "")
-        if not triple.startswith(ABI_TRIPLE.get(abi, "?")):
-            problems.append(f"observed.target_triple {triple!r} is not for {abi}")
-    if archive is not None:
-        if (receipt.get("archive") or {}).get("sha256") != apple.sha256_file(archive):
-            problems.append("receipt archive sha256 does not match the archive")
-        if observed is not None and observed != linux.observed_elf(archive):
-            problems.append("observed_elf does not match the archive")
+        triple = str((receipt.get("observed") or {}).get("target_triple", ""))
+        if triple != f"{ABI_TRIPLE.get(abi, '?')}{receipt.get('api_level')}":
+            problems.append(f"observed.target_triple {triple!r} is not {abi} at API {receipt.get('api_level')}")
+    if (receipt.get("archive") or {}).get("sha256") != apple.sha256_file(archive):
+        problems.append("receipt archive sha256 does not match the archive")
+    if (receipt.get("archive") or {}).get("name") != archive.name:
+        problems.append(f"receipt archive name {(receipt.get('archive') or {}).get('name')!r} != {archive.name!r}")
+    measured = linux.observed_elf(archive)
+    if isinstance(observed, dict) and observed != measured:
+        problems.append("observed_elf does not match the archive")
+    if (receipt.get("observed") or {}).get("elf_machines") != sorted(measured["machines"]):
+        problems.append("observed.elf_machines does not match the archive")
     return problems
 
 
@@ -194,43 +224,43 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--archive", type=Path)
-    parser.add_argument("--abi", choices=sorted(ABI_ELF))
+    parser.add_argument("--archive", type=Path, required=True)
+    parser.add_argument("--abi", choices=sorted(ABI_ELF), required=True)
     parser.add_argument("--api-level", type=int, default=26)
     parser.add_argument("--ndk", type=Path, default=Path(os.environ.get("ANDROID_NDK_HOME", "")))
-    parser.add_argument("--configuration", default="Release")
-    parser.add_argument("--variant", default="gpu")
+    parser.add_argument("--configuration", required=True)
+    parser.add_argument("--variant", required=True)
     parser.add_argument("--toolchain-ninja", action="append", type=Path, default=[])
     parser.add_argument("--content-addressed-dir", type=Path)
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args(argv)
 
+    expected = {"abi": args.abi, "configuration": args.configuration, "variant": args.variant}
     if args.check:
-        receipt = json.loads(args.output.read_text(encoding="utf-8"))
-        problems = validate_receipt(receipt, args.archive)
-        match = CONTENT_ADDRESSED_RE.search(args.output.name)
-        if match and match.group(1) != apple.sha256_file(args.output):
-            problems.append(f"{args.output.name} does not carry its own sha256")
+        data = args.output.read_bytes()
+        receipt = json.loads(data.decode("utf-8"))
+        problems = validate_receipt(receipt, args.archive, **expected)
+        if args.output.name != content_addressed_name(args.archive.name, data):
+            problems.append(f"{args.output.name} is not the exact content-addressed name for "
+                            f"{args.archive.name} and its bytes")
         for problem in problems:
             print(f"ndk-toolchain-receipt: {problem}", file=sys.stderr)
         if not problems:
             print(f"ndk-toolchain-receipt: {args.output} is proven")
         return 1 if problems else 0
 
-    if not args.abi:
-        parser.error("--abi is required")
     receipt = build_receipt(args.abi, args.api_level, args.configuration, args.variant, args.ndk,
                             args.toolchain_ninja, args.archive)
     data = apple.canonical_bytes(receipt)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(data)
-    problems = validate_receipt(receipt, args.archive)
+    problems = validate_receipt(receipt, args.archive, **expected)
     for problem in problems:
         print(f"ndk-toolchain-receipt: {problem}", file=sys.stderr)
     if args.content_addressed_dir and not problems:
         args.content_addressed_dir.mkdir(parents=True, exist_ok=True)
         target = args.content_addressed_dir / content_addressed_name(
-            args.archive.name if args.archive else "toolchain", data)
+            args.archive.name, data)
         target.write_bytes(data)
         print(f"ndk-toolchain-receipt: content-addressed copy {target}")
     return 1 if problems else 0

@@ -1,51 +1,10 @@
 name: Lint
 
 # Guards that keep the release workflow self-consistent. Cheap, fast, and
-# runs on every PR (and pushes) that touches the build workflow or the guard
-# scripts themselves.
+# runs on every PR (it is a required check, so it must not be path-filtered)
+# and on pushes that touch the build workflow or the guard scripts.
 on:
   pull_request:
-    paths:
-      - '.github/workflows/build-skia.yml'
-      - '.github/workflows/watch-skia.yml'
-      - '.github/workflows/lint.yml'
-      - 'patches/apply_dawn_ios_visionos.py'
-      - 'patches/test_apply_dawn_ios_visionos.py'
-      - 'patches/apply_dawn_windows_arm64_vector_stl.py'
-      - 'patches/test_apply_dawn_windows_arm64_vector_stl.py'
-      - 'tools/check_release_coverage.py'
-      - 'tools/skia_matrix.json'
-      - 'tools/skia_release_lock.py'
-      - 'tools/test_skia_release_lock.py'
-      - 'tools/matched_v8_link.py'
-      - 'tools/test_matched_v8_link.py'
-      - 'build-skia.py'
-      - 'tools/test_windows_arch_flags.py'
-      - '.github/workflows/create-xcframework.yml'
-      - 'tools/release_asset_guard.py'
-      - 'tools/test_release_asset_guard.py'
-      - 'tools/check_windows_archive.py'
-      - 'tools/check_linux_archive.py'
-      - 'tools/test_check_linux_archive.py'
-      - 'tools/test_check_windows_archive.py'
-      - 'tools/write_windows_toolchain_provenance.py'
-      - 'tools/test_windows_toolchain_provenance.py'
-      - 'tools/apple_archive.py'
-      - 'tools/write_legal_manifest.py'
-      - 'tools/write_apple_toolchain_receipt.py'
-      - 'tools/compare_archive_members.py'
-      - 'tools/test_apple_provenance.py'
-      - 'tools/rebind_provenance.py'
-      - 'tools/test_rebind_workflow.py'
-      - 'tools/test_attest_subjects.py'
-      - 'tools/test_patch_script_platforms.py'
-      - 'tools/check_rebuild_run.py'
-      - 'tools/testdata/**'
-      - 'tools/requirements-lint.txt'
-      - 'tools/test_lint_requirements.py'
-      - 'tools/test_publish_ref_gate.py'
-      # Any workflow may gain release write access; the gate test reads them all.
-      - '.github/workflows/**'
   push:
     branches: [main]
     paths:
@@ -85,6 +44,10 @@ on:
       - 'tools/requirements-lint.txt'
       - 'tools/test_lint_requirements.py'
       - 'tools/test_publish_ref_gate.py'
+      - 'tools/test_release_path_gate.py'
+      - 'tools/release_path_rule.py'
+      - '.github/CODEOWNERS'
+      - '.shipyard/config.toml'
       # Any workflow may gain release write access; the gate test reads them all.
       - '.github/workflows/**'
   workflow_dispatch:
@@ -148,6 +111,8 @@ jobs:
       - run: python3 tools/test_attest_subjects.py
       # Only main may write to a release.
       - run: python3 tools/test_publish_ref_gate.py
+      # The release-path gate's CODEOWNERS, workflow pin and reviewer policy.
+      - run: python3 tools/test_release_path_gate.py
       # zizmor reports only: no step may be able to fail the job.
       - run: python3 tools/test_zizmor_report_only.py
       - run: python3 -m py_compile build-skia.py patches/apply_dawn_windows_arm64_vector_stl.py tools/skia_release_lock.py tools/matched_v8_link.py tools/release_asset_guard.py tools/check_windows_archive.py tools/check_linux_archive.py tools/write_windows_toolchain_provenance.py tools/apple_archive.py tools/write_legal_manifest.py tools/write_apple_toolchain_receipt.py tools/compare_archive_members.py tools/rebind_provenance.py tools/check_rebuild_run.py

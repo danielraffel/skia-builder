@@ -69,6 +69,8 @@ class GnArgsTests(unittest.TestCase):
             for platform, args in table.items():
                 if platform != "linux":
                     self.assertNotIn("skia_use_partition_alloc", args, platform)
+        # Android sets it in its own block (ANDROID_GN_ARGS), not in these tables.
+        self.assertNotIn("android", build_skia.PLATFORM_GN_ARGS)
         self.assertNotIn("skia_use_partition_alloc", build_skia.RELEASE_GN_ARGS)
 
 
@@ -83,10 +85,11 @@ class AndroidTests(unittest.TestCase):
         args = build_skia.ANDROID_GN_ARGS.format(cpu="arm64", ndk="/ndk")
         for line in ('target_os = "android"', 'target_cpu = "arm64"', 'ndk = "/ndk"', "ndk_api = 26",
                      "skia_enable_graphite = true", "skia_use_dawn = true", "skia_use_vulkan = true",
-                     "skia_use_gl = false", "skia_enable_pdf = false", "skia_enable_sksl = true"):
+                     "skia_use_gl = false", "skia_enable_pdf = false", "skia_enable_sksl = true",
+                     "skia_use_partition_alloc = false"):
             self.assertIn(line, args.splitlines())
-        # Nothing the shared tables add: they would make the asset differ from Pulp's build.
-        for forbidden in ("skia_use_partition_alloc", "skia_use_libwebp", "skia_use_xps", "cc = "):
+        # Nothing else the shared tables add: it would make the asset differ from Pulp's build.
+        for forbidden in ("skia_use_libwebp", "skia_use_xps", "cc = "):
             self.assertNotIn(forbidden, args)
 
     def test_android_cpu_mapping(self) -> None:

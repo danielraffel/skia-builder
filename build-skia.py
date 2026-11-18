@@ -160,10 +160,17 @@ LIBS = {
     ]
 }
 
-# Android GN args, verbatim from Pulp's tools/build-skia-android.sh (Graphite on
-# Dawn/Vulkan), so the archive Pulp's Android CI is tested against is the one
-# published here. Only target_cpu and ndk are filled in per cell. Android does
-# NOT use BASIC_GN_ARGS / RELEASE_GN_ARGS / the platform tables above.
+# Android GN args, taken from Pulp's tools/build-skia-android.sh (Graphite on
+# Dawn/Vulkan), so the archive matches the one Pulp's Android CI is tested
+# against. Only target_cpu and ndk are filled in per cell. Android does NOT use
+# BASIC_GN_ARGS / RELEASE_GN_ARGS / the platform tables above.
+#
+# One line differs from Pulp's script: skia_use_partition_alloc = false. With
+# PartitionAlloc on, libskia.a references four RawPtrBackupRefImpl symbols that
+# none of the packaged libraries define (Pulp's script stages libraw_ptr.a and
+# liballocator_*.a, which Pulp's FindSkia then drops on Android). Off, raw_ptr
+# is a plain pointer and the archive passes tools/check_linux_archive.py, as
+# the Linux archives do.
 ANDROID_GN_ARGS = f"""
 target_os = "android"
 target_cpu = "{{cpu}}"
@@ -204,6 +211,8 @@ ndk_api = {ANDROID_NDK_API}
 
 skia_enable_pdf = false
 skia_enable_sksl = true
+
+skia_use_partition_alloc = false
 """
 
 # Android builds the same library set as Linux.

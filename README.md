@@ -281,7 +281,7 @@ Linux and Windows archives publish the same records the Apple archives do, besid
 
 Each build job proves its records against its own archive (`--check`) before the artifact is uploaded, and a record that does not prove what it claims fails the job. The Linux and Windows x64/arm64 backfills (`platforms=linux`, `win-arm64`, `win-x64`) publish the records and the bundle with the archives.
 
-Linux archives are checked with `tools/check_linux_archive.py` before upload: no static library may reference PartitionAlloc's `RawPtrBackupRefImpl` without a definition, which is why the Linux GN args set `skia_use_partition_alloc = false`.
+Linux and Android archives are checked with `tools/check_linux_archive.py` before upload: no static library may reference PartitionAlloc's `RawPtrBackupRefImpl` without a definition, which is why the Linux and Android GN args set `skia_use_partition_alloc = false`. That line is the one difference between the Android GN args and Pulp's `tools/build-skia-android.sh`.
 
 When a matrix job fails, inspect that job first and rerun only its platform with `skip_release=true` (for example, `platforms=visionos`). A targeted run does not publish a partial release. After every required platform has passed, run one `platforms=all` build to assemble the XCFramework and publish the release. This keeps completed platform builds out of routine recovery runs while preserving a single complete release gate.
 

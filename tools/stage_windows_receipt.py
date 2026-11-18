@@ -16,7 +16,9 @@ in the same shape the Linux, wasm and Android receipts use
   library, and ``source_receipt``: the digest of the receipt inside the archive.
 
 The in-archive receipt must pass ``write_windows_toolchain_provenance
-.validate_receipt`` first.  ``--check`` re-derives everything that can be
+.validate_receipt`` first.  Both modes take the cell the caller built (``--arch``, ``--configuration``,
+``--variant``); the staged receipt and the receipt inside the archive must
+each name exactly that Windows cell.  ``--check`` re-derives everything that can be
 re-derived from the archive alone (digest binding, machines, source receipt)
 and validates the rest; it cannot re-hash tools that only exist on the runner.
 """
@@ -118,7 +120,7 @@ def tool_row(path: str, vendor: str, banner: str, hasher=None) -> dict[str, str]
 
 
 def derive(archive: Path, source: dict, source_bytes: bytes, arch: str, configuration: str,
-           banner=run_banner, hasher=None) -> dict:
+           variant: str, banner=run_banner, hasher=None) -> dict:
     producer = source.get("producer") or {}
     cl = (producer.get("skia_gn_compiler") or {}).get("path", "")
     directory = str(Path(cl).parent) if cl else ""
@@ -130,7 +132,7 @@ def derive(archive: Path, source: dict, source_bytes: bytes, arch: str, configur
         "schema": SCHEMA,
         "archive": {"name": archive.name, "sha256": sha256_file(archive)},
         "target": {"platform": "windows", "architectures": [arch], "configuration": configuration,
-                   "variant": (source.get("target") or {}).get("variant", "gpu")},
+                   "variant": variant},
         "compiler": {"cxx": tool_row(cl, "msvc", (producer.get("skia_gn_compiler") or {}).get("version", "unknown"), hasher)},
         "linker": tool_row(link, "msvc", banner(link), hasher),
         "archiver": tool_row(lib, "msvc", banner(lib), hasher),
@@ -146,12 +148,18 @@ def derive(archive: Path, source: dict, source_bytes: bytes, arch: str, configur
 
 
 def problems_for(archive: Path, staged: dict, source_bytes: bytes, arch: str,
-                 configuration: str) -> list[str]:
+                 configuration: str, variant: str) -> list[str]:
+    """Every reason ``staged`` does not prove the named Windows cell of ``archive``.
+
+    Both the staged receipt and the receipt inside the archive must name the
+    cell the caller built (platform, architecture, configuration and variant).
+    """
     try:
         source = json.loads(source_bytes.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         return [f"receipt inside the archive is not JSON: {error}"]
-    problems = receipt_tool.validate_receipt(source, arch, configuration)
+    problems = [f"archive receipt: {problem}"
+                for problem in receipt_tool.validate_receipt(source, arch, configuration, variant)]
     walked: list[str] = []
 
     def walk(value: object, where: str) -> None:
@@ -169,9 +177,18 @@ def problems_for(archive: Path, staged: dict, source_bytes: bytes, arch: str,
         problems.append(f"schema = {staged.get('schema')!r}")
     if (staged.get("archive") or {}).get("sha256") != sha256_file(archive):
         problems.append("staged archive sha256 does not match the archive")
+    if (staged.get("archive") or {}).get("name") != archive.name:
+        problems.append(f"staged archive name {(staged.get('archive') or {}).get('name')!r} != {archive.name!r}")
     if (staged.get("source_receipt") or {}).get("sha256") != hashlib.sha256(source_bytes).hexdigest():
         problems.append("staged source_receipt is not the receipt inside the archive")
     target = staged.get("target") or {}
+    expected_machine = ARCH_MACHINES.get(str(arch).lower())
+    if not expected_machine:
+        problems.append(f"expected architecture {arch!r} is not a Windows architecture")
+    if target.get("platform") != "windows":
+        problems.append(f"target.platform {target.get('platform')!r} != 'windows'")
+    if not variant or target.get("variant") != variant:
+        problems.append(f"target.variant {target.get('variant')!r} != {variant!r}")
     if target.get("architectures") != [arch]:
         problems.append(f"target.architectures {target.get('architectures')!r} != {[arch]!r}")
     if target.get("configuration") != configuration:
@@ -198,7 +215,7 @@ def problems_for(archive: Path, staged: dict, source_bytes: bytes, arch: str,
         problems.append(f"archive has {actual_undecodable} undecodable object member(s)")
     if not machines:
         problems.append("the archive holds no COFF object member")
-    elif set(machines) - {ARCH_MACHINES.get(arch.lower(), arch.lower())}:
+    elif expected_machine and set(machines) - {expected_machine}:
         problems.append(f"objects for {sorted(machines)} in a {arch} cell")
     return problems
 
@@ -209,6 +226,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--arch", required=True)
     parser.add_argument("--configuration", required=True)
+    parser.add_argument("--variant", required=True)
     parser.add_argument("--out-dir", type=Path, help="write the content-addressed receipt here")
     parser.add_argument("--check", type=Path, metavar="STAGED",
                         help="re-prove a staged receipt against --archive instead of writing one")
@@ -218,10 +236,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.check:
         data = args.check.read_bytes()
         staged = json.loads(data.decode("utf-8"))
-        problems = problems_for(args.archive, staged, source_bytes, args.arch, args.configuration)
+        problems = problems_for(args.archive, staged, source_bytes, args.arch, args.configuration,
+                                args.variant)
         match = CONTENT_ADDRESSED_RE.search(args.check.name)
         if not match or match.group(1) != hashlib.sha256(data).hexdigest():
             problems.append(f"{args.check.name} does not carry its own sha256")
+        elif args.check.name != content_addressed_name(args.archive.name, data):
+            problems.append(f"{args.check.name} is not the exact content-addressed name for {args.archive.name}")
     else:
         try:
             source = json.loads(source_bytes.decode("utf-8"))
@@ -229,8 +250,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"msvc-toolchain-receipt: receipt inside the archive is not JSON: {error}",
                   file=sys.stderr)
             return 1
-        staged = derive(args.archive, source, source_bytes, args.arch, args.configuration)
-        problems = problems_for(args.archive, staged, source_bytes, args.arch, args.configuration)
+        staged = derive(args.archive, source, source_bytes, args.arch, args.configuration,
+                        args.variant)
+        problems = problems_for(args.archive, staged, source_bytes, args.arch, args.configuration,
+                                args.variant)
     for problem in problems:
         print(f"msvc-toolchain-receipt: {problem}", file=sys.stderr)
     if problems:

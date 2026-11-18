@@ -20,8 +20,9 @@ runner that built the archive:
 * the ELF facts of every object member of every packaged library: machine,
   class and the distinct ``.comment`` strings.
 
-``--check`` fails when a field is empty or unknown, when the archive is not
-the one the receipt names, when an object is not for the cell's architecture,
+``--check`` takes the cell the caller built (``--arch``, ``--configuration``,
+``--variant``) and fails when the receipt claims any other target, when a
+field is empty or unknown, when the archive is not the one the receipt names, when an object is not for the cell's architecture,
 or when a clang-written object was produced by a different clang than the
 receipt names: a receipt that does not match its archive is worse than none.
 
@@ -252,8 +253,37 @@ def link_probe(archive: Path, cxx: str, probe: apple.Probe) -> dict[str, str]:
         return symbol_versions(probe.out(["objdump", "-T", str(exe)]))
 
 
-def validate_receipt(receipt: dict, archive: Path | None = None) -> list[str]:
+def target_problems(target: object, arch: str, configuration: str, variant: str) -> list[str]:
+    """Reasons ``target`` is not exactly the Linux cell the caller built."""
+    target = target if isinstance(target, dict) else {}
     problems: list[str] = []
+    expected_arch = ARCH_NAMES.get(str(arch).lower(), "")
+    if not expected_arch:
+        problems.append(f"expected architecture {arch!r} is not a Linux architecture")
+    if target.get("platform") != "linux":
+        problems.append(f"target.platform {target.get('platform')!r} != 'linux'")
+    claimed = target.get("architectures")
+    if not isinstance(claimed, list) or len(claimed) != 1:
+        problems.append(f"target.architectures {claimed!r} is not exactly one architecture")
+    elif not ARCH_NAMES.get(str(claimed[0]).lower()):
+        problems.append(f"target.architectures {claimed!r} names an unknown architecture")
+    elif expected_arch and ARCH_NAMES[str(claimed[0]).lower()] != expected_arch:
+        problems.append(f"target.architectures {claimed!r} != [{arch!r}]")
+    if not configuration or target.get("configuration") != configuration:
+        problems.append(f"target.configuration {target.get('configuration')!r} != {configuration!r}")
+    if not variant or target.get("variant") != variant:
+        problems.append(f"target.variant {target.get('variant')!r} != {variant!r}")
+    return problems
+
+
+def validate_receipt(receipt: dict, archive: Path | None = None, *, arch: str,
+                     configuration: str, variant: str) -> list[str]:
+    """Every reason ``receipt`` does not prove the named Linux cell.
+
+    The expected cell is required: a receipt is only meaningful for the cell
+    the caller built, never for whatever target it claims.
+    """
+    problems: list[str] = target_problems(receipt.get("target"), arch, configuration, variant)
 
     def walk(value: object, where: str) -> None:
         if isinstance(value, dict):
@@ -320,11 +350,13 @@ def validate_receipt(receipt: dict, archive: Path | None = None) -> list[str]:
     for key in required_observed:
         if key not in observed:
             problems.append(f"observed_elf.{key} was not measured")
-    arch = ARCH_NAMES.get(str(target_arch), "")
+    arch = ARCH_NAMES.get(str(target_arch).lower(), "")
     machines = observed.get("machines") or {}
     if not machines:
         problems.append("the archive holds no ELF object member")
-    if arch and set(machines) - {arch}:
+    if not arch:
+        problems.append(f"no known architecture to compare object machines against ({target_arch!r})")
+    elif set(machines) - {arch}:
         problems.append(f"objects for {sorted(set(machines) - {arch})} in a {arch} cell")
     if observed.get("members_not_elf", 0):
         problems.append(f"archive has {observed['members_not_elf']} member(s) that are not ELF")
@@ -364,9 +396,9 @@ def main(argv: list[str] | None = None) -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("output", type=Path)
     parser.add_argument("--archive", type=Path)
-    parser.add_argument("--arch", default="")
-    parser.add_argument("--configuration", default="Release")
-    parser.add_argument("--variant", default="gpu")
+    parser.add_argument("--arch", required=True, help="the cell's architecture (x64 or arm64)")
+    parser.add_argument("--configuration", required=True)
+    parser.add_argument("--variant", required=True)
     parser.add_argument("--toolchain-ninja", action="append", type=Path, default=[],
                         help="GN toolchain.ninja for the built architecture")
     parser.add_argument("--link-probe", action="store_true",
@@ -378,10 +410,13 @@ def main(argv: list[str] | None = None) -> int:
                         help="validate an existing receipt (against --archive) instead of writing one")
     args = parser.parse_args(argv)
 
+    expected = {"arch": args.arch, "configuration": args.configuration, "variant": args.variant}
     if args.check:
+        if not args.archive:
+            parser.error("--check requires --archive")
         data = args.output.read_bytes()
         receipt = json.loads(data.decode("utf-8"))
-        problems = validate_receipt(receipt, args.archive)
+        problems = validate_receipt(receipt, args.archive, **expected)
         match = CONTENT_ADDRESSED_RE.search(args.output.name)
         digest = hashlib.sha256(data).hexdigest()
         if not match:
@@ -397,15 +432,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"linux-toolchain-receipt: {args.output} is proven")
         return 0
 
-    if not args.arch:
-        parser.error("--arch is required")
     receipt = build_receipt(args.arch, args.configuration, args.variant, args.toolchain_ninja,
                             args.archive, container_image=args.container_image,
                             link_probe_enabled=args.link_probe)
     data = apple.canonical_bytes(receipt)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(data)
-    problems = validate_receipt(receipt, args.archive)
+    problems = validate_receipt(receipt, args.archive, **expected)
     for problem in problems:
         print(f"linux-toolchain-receipt: {problem}", file=sys.stderr)
     if args.content_addressed_dir and not problems:

@@ -56,6 +56,7 @@ from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apple_archive  # noqa: E402
+import archive_cell  # noqa: E402
 
 SCHEMA = "skia-builder.legal-manifest.v1"
 LICENSE_RESOLUTION = "nearest-ancestor-license-file"
@@ -715,11 +716,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.check:
-        manifest = json.loads(args.output.read_text(encoding="utf-8"))
+        data = args.output.read_bytes()
+        manifest = json.loads(data.decode("utf-8"))
         match = CONTENT_ADDRESSED_RE.search(args.output.name)
         problems = validate_manifest(manifest, args.archive)
-        if match and match.group(1) != sha256_file(args.output):
+        # The cell is the one the archive's name promises, not the manifest's own claim.
+        problems += archive_cell.cell_problems(args.archive.name, manifest.get("cell"), label="cell")
+        if not match:
+            problems.append(f"{args.output.name} is not a content-addressed legal manifest name")
+        elif match.group(1) != hashlib.sha256(data).hexdigest():
             problems.append(f"{args.output.name} does not carry its own sha256")
+        elif args.output.name != content_addressed_name(args.archive.name, data):
+            problems.append(f"{args.output.name} is not the exact content-addressed name for {args.archive.name}")
         for problem in problems:
             print(f"legal-manifest: {problem}", file=sys.stderr)
         if problems:

@@ -28,6 +28,8 @@ manifest_tool = load("write_legal_manifest")
 linux_tool = load("write_linux_toolchain_receipt")
 stage_tool = load("stage_windows_receipt")
 
+CELL = {"arch": "x64", "configuration": "Release", "variant": "gpu"}
+CELL_ARGS = ["--arch", "x64", "--configuration", "Release", "--variant", "gpu"]
 CLANG = "clang version 20.1.0 (https://github.com/llvm/llvm-project 24a30daaa559829ad079f2ff7f73eb4e18095f88)"
 
 
@@ -155,7 +157,7 @@ class LinuxReceiptTests(unittest.TestCase):
     def test_a_receipt_matching_its_archive_is_proven(self):
         archive = self.archive()
         receipt = self.receipt(archive)
-        self.assertEqual(linux_tool.validate_receipt(receipt, archive), [])
+        self.assertEqual(linux_tool.validate_receipt(receipt, archive, **CELL), [])
         self.assertEqual(receipt["cpp_abi"]["x64"], {"stdlib": "libstdc++", "stdlib_version": "11",
                                                       "glibcxx_release": "11"})
         self.assertEqual(receipt["observed"]["max_glibc_version"], "2.34")
@@ -166,17 +168,17 @@ class LinuxReceiptTests(unittest.TestCase):
 
     def test_objects_built_by_another_clang_are_refused(self):
         archive = self.archive(comments=("clang version 19.1.0 (x)",))
-        problems = linux_tool.validate_receipt(self.receipt(archive), archive)
+        problems = linux_tool.validate_receipt(self.receipt(archive), archive, **CELL)
         self.assertTrue(any("built by clang" in problem for problem in problems), problems)
 
     def test_an_object_for_another_architecture_is_refused(self):
         archive = self.archive(machine=183)
-        problems = linux_tool.validate_receipt(self.receipt(archive), archive)
+        problems = linux_tool.validate_receipt(self.receipt(archive), archive, **CELL)
         self.assertTrue(any("in a x64 cell" in problem for problem in problems), problems)
 
     def test_objects_needing_a_newer_glibc_than_the_producer_are_refused(self):
         archive = self.archive()
-        problems = linux_tool.validate_receipt(self.receipt(archive, glibc="ldd (x) 2.31"), archive)
+        problems = linux_tool.validate_receipt(self.receipt(archive, glibc="ldd (x) 2.31"), archive, **CELL)
         self.assertTrue(any("newer than the producer" in problem for problem in problems), problems)
 
     def test_a_failed_link_probe_reports_the_linker_error(self):
@@ -196,7 +198,7 @@ class LinuxReceiptTests(unittest.TestCase):
         archive = self.archive()
         receipt = self.receipt(archive)
         del receipt["observed"]["max_glibcxx_version"]
-        self.assertTrue(any("max_glibcxx_version" in p for p in linux_tool.validate_receipt(receipt, archive)))
+        self.assertTrue(any("max_glibcxx_version" in p for p in linux_tool.validate_receipt(receipt, archive, **CELL)))
 
     def test_object_measurements_are_required_and_complete(self):
         archive = self.archive()
@@ -205,7 +207,7 @@ class LinuxReceiptTests(unittest.TestCase):
         receipt["observed_elf"]["members_without_comment"] = 1
         receipt.pop("observed")
         receipt.pop("observed_elf")
-        problems = linux_tool.validate_receipt(receipt, archive)
+        problems = linux_tool.validate_receipt(receipt, archive, **CELL)
         self.assertTrue(any("observed_elf is required" in p for p in problems), problems)
         self.assertTrue(any("observed link-probe data is required" in p for p in problems), problems)
 
@@ -216,13 +218,13 @@ class LinuxReceiptTests(unittest.TestCase):
             ("build/linux-gpu/lib/libdawn_combined.a", gnu_ar([("no-comment.o", elf(comments=()))])),
         ])
         receipt = self.receipt(archive)
-        problems = linux_tool.validate_receipt(receipt, archive)
+        problems = linux_tool.validate_receipt(receipt, archive, **CELL)
         self.assertTrue(any("not ELF" in p for p in problems), problems)
         self.assertTrue(any("without .comment" in p for p in problems), problems)
 
     def test_an_unknown_compiler_banner_is_refused(self):
         archive = self.archive()
-        problems = linux_tool.validate_receipt(self.receipt(archive, clang="error: exit 1"), archive)
+        problems = linux_tool.validate_receipt(self.receipt(archive, clang="error: exit 1"), archive, **CELL)
         self.assertTrue(problems)
 
     def test_a_receipt_bound_to_other_archive_bytes_is_refused(self):
@@ -230,7 +232,7 @@ class LinuxReceiptTests(unittest.TestCase):
         receipt = self.receipt(archive)
         other = self.tmp / "other.zip"
         write_zip(other, [("build/linux-gpu/lib/libskia.a", gnu_ar([("b.o", elf())]))])
-        self.assertTrue(linux_tool.validate_receipt(receipt, other))
+        self.assertTrue(linux_tool.validate_receipt(receipt, other, **CELL))
 
     def test_the_compiler_is_found_past_a_ccache_wrapper(self):
         self.assertEqual(linux_tool.compiler_program("ccache clang++ -c a.cc"), "clang++")
@@ -244,16 +246,60 @@ class LinuxReceiptTests(unittest.TestCase):
         name = linux_tool.content_addressed_name(archive.name, data)
         staged = self.tmp / name
         staged.write_bytes(data)
-        self.assertEqual(linux_tool.main([str(staged), "--archive", str(archive), "--check"]), 0)
+        self.assertEqual(linux_tool.main([str(staged), "--archive", str(archive), "--check", *CELL_ARGS]), 0)
         staged.write_bytes(data.replace(b"2.35", b"2.36", 1))
-        self.assertEqual(linux_tool.main([str(staged), "--archive", str(archive), "--check"]), 1)
+        self.assertEqual(linux_tool.main([str(staged), "--archive", str(archive), "--check", *CELL_ARGS]), 1)
 
     def test_cli_rejects_a_non_content_addressed_filename(self):
         archive = self.archive()
         receipt = self.receipt(archive)
         staged = self.tmp / "linux-toolchain.json"
         staged.write_bytes(linux_tool.apple.canonical_bytes(receipt))
-        self.assertEqual(linux_tool.main([str(staged), "--archive", str(archive), "--check"]), 1)
+        self.assertEqual(linux_tool.main([str(staged), "--archive", str(archive), "--check", *CELL_ARGS]), 1)
+
+    def staged(self, archive, receipt):
+        data = linux_tool.apple.canonical_bytes(receipt)
+        path = self.tmp / linux_tool.content_addressed_name(archive.name, data)
+        path.write_bytes(data)
+        return path
+
+    def test_check_requires_the_expected_cell(self):
+        archive = self.archive()
+        staged = self.staged(archive, self.receipt(archive))
+        for missing in ("--arch", "--configuration", "--variant"):
+            index = CELL_ARGS.index(missing)
+            args = CELL_ARGS[:index] + CELL_ARGS[index + 2:]
+            with self.subTest(missing=missing), self.assertRaises(SystemExit):
+                linux_tool.main([str(staged), "--archive", str(archive), "--check", *args])
+        with self.assertRaises(SystemExit):
+            linux_tool.main([str(staged), "--check", *CELL_ARGS])
+
+    def test_a_receipt_rehashed_to_claim_another_cell_is_refused(self):
+        archive = self.archive()
+        for key, value in (("platform", "android"), ("configuration", "Debug"), ("variant", "cpu")):
+            receipt = self.receipt(archive)
+            receipt["target"][key] = value
+            with self.subTest(key=key):
+                self.assertTrue(any(f"target.{key}" in p
+                                    for p in linux_tool.validate_receipt(receipt, archive, **CELL)))
+                self.assertEqual(linux_tool.main([str(self.staged(archive, receipt)), "--archive",
+                                                  str(archive), "--check", *CELL_ARGS]), 1)
+        # The caller's expectation, not the receipt's claim, names the cell.
+        problems = linux_tool.validate_receipt(self.receipt(archive), archive,
+                                               **dict(CELL, arch="arm64"))
+        self.assertTrue(any("target.architectures" in p for p in problems), problems)
+        problems = linux_tool.validate_receipt(self.receipt(archive), archive,
+                                               **dict(CELL, arch="riscv64"))
+        self.assertTrue(any("not a Linux architecture" in p for p in problems), problems)
+
+    def test_an_unknown_target_architecture_is_refused(self):
+        archive = self.archive()
+        receipt = self.receipt(archive)
+        receipt["target"]["architectures"] = ["riscv64"]
+        receipt["cpp_abi"] = {"riscv64": receipt["cpp_abi"]["x64"]}
+        problems = linux_tool.validate_receipt(receipt, archive, **dict(CELL, arch="riscv64"))
+        self.assertTrue(any("unknown architecture" in p for p in problems), problems)
+        self.assertTrue(any("no known architecture to compare" in p for p in problems), problems)
 
 
 class WindowsStagingTests(unittest.TestCase):
@@ -282,7 +328,7 @@ class WindowsStagingTests(unittest.TestCase):
             return ("Microsoft (R) Incremental Linker Version 14.44.35207.0" if path.endswith("link.exe")
                     else "Microsoft (R) Library Manager Version 14.44.35207.0")
         source = archive_receipt_bytes(archive)
-        staged = stage_tool.derive(archive, json.loads(source), source, "x64", "Release", banner=banner,
+        staged = stage_tool.derive(archive, json.loads(source), source, "x64", "Release", "gpu", banner=banner,
                                   hasher=lambda path: "cd" * 32)
         data = stage_tool.canonical_bytes(staged)
         out.mkdir(exist_ok=True)
@@ -292,7 +338,7 @@ class WindowsStagingTests(unittest.TestCase):
 
     def check(self, archive, staged_path):
         return stage_tool.main(["--archive", str(archive), "--arch", "x64", "--configuration",
-                                "Release", "--check", str(staged_path)])
+                                "Release", "--variant", "gpu", "--check", str(staged_path)])
 
     def test_stage_then_check_round_trips(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -339,7 +385,7 @@ class WindowsStagingTests(unittest.TestCase):
             staged["target"]["architectures"] = ["arm64"]
             staged["target"]["configuration"] = "Debug"
             problems = stage_tool.problems_for(archive, staged, archive_receipt_bytes(archive),
-                                                "x64", "Release")
+                                                "x64", "Release", "gpu")
             self.assertTrue(any("target.architectures" in p for p in problems), problems)
             self.assertTrue(any("target.configuration" in p for p in problems), problems)
 
@@ -350,7 +396,7 @@ class WindowsStagingTests(unittest.TestCase):
             bad["producer"]["windows_sdk_version"] = "unknown"
             archive = self.archive(tmp, bad)
             args = ["--archive", str(archive), "--arch", "x64", "--configuration", "Release",
-                    "--out-dir", str(tmp / "assets")]
+                    "--variant", "gpu", "--out-dir", str(tmp / "assets")]
             self.assertEqual(stage_tool.main(args), 1)
             self.assertFalse((tmp / "assets").exists())
 
@@ -361,6 +407,62 @@ class WindowsStagingTests(unittest.TestCase):
             path, _ = self.stage(archive, tmp / "assets")
             path.write_bytes(path.read_bytes().replace(b"14.44.35207", b"14.44.35208", 1))
             self.assertEqual(self.check(archive, path), 1)
+
+    def test_staged_receipt_must_claim_the_windows_cell(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tmp = pathlib.Path(temporary)
+            archive = self.archive(tmp, self.receipt())
+            for key, value in (("platform", "linux"), ("variant", "cpu")):
+                _, staged = self.stage(archive, tmp / "assets")
+                staged["target"][key] = value
+                problems = stage_tool.problems_for(archive, staged, archive_receipt_bytes(archive),
+                                                    "x64", "Release", "gpu")
+                self.assertTrue(any(f"target.{key}" in p for p in problems), (key, problems))
+                data = stage_tool.canonical_bytes(staged)
+                path = tmp / stage_tool.content_addressed_name(archive.name, data)
+                path.write_bytes(data)
+                self.assertEqual(self.check(archive, path), 1, key)
+
+    def test_receipt_inside_the_archive_must_claim_the_windows_cell(self):
+        for key, value in (("platform", "linux"), ("variant", "cpu"), ("architecture", "arm64")):
+            with tempfile.TemporaryDirectory() as temporary:
+                tmp = pathlib.Path(temporary)
+                source = self.receipt()
+                source["target"][key] = value
+                archive = self.archive(tmp, source)
+                path, staged = self.stage(archive, tmp / "assets")
+                problems = stage_tool.problems_for(archive, staged, archive_receipt_bytes(archive),
+                                                    "x64", "Release", "gpu")
+                self.assertTrue(any(p.startswith("archive receipt: target.") for p in problems),
+                                (key, problems))
+                self.assertEqual(self.check(archive, path), 1, key)
+
+    def test_an_unknown_expected_architecture_is_refused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tmp = pathlib.Path(temporary)
+            archive = self.archive(tmp, self.receipt())
+            _, staged = self.stage(archive, tmp / "assets")
+            problems = stage_tool.problems_for(archive, staged, archive_receipt_bytes(archive),
+                                                "riscv64", "Release", "gpu")
+            self.assertTrue(any("not a Windows architecture" in p for p in problems), problems)
+
+    def test_a_staged_copy_named_for_another_archive_is_refused(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tmp = pathlib.Path(temporary)
+            archive = self.archive(tmp, self.receipt())
+            path, _ = self.stage(archive, tmp / "assets")
+            renamed = path.with_name(path.name.replace("-x64-", "-arm64-"))
+            path.rename(renamed)
+            self.assertEqual(self.check(archive, renamed), 1)
+
+    def test_check_requires_the_variant(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tmp = pathlib.Path(temporary)
+            archive = self.archive(tmp, self.receipt())
+            path, _ = self.stage(archive, tmp / "assets")
+            with self.assertRaises(SystemExit):
+                stage_tool.main(["--archive", str(archive), "--arch", "x64", "--configuration",
+                                 "Release", "--check", str(path)])
 
 
 def archive_receipt_bytes(archive):

@@ -549,7 +549,7 @@ jobs:
           mkdir -p provenance provenance-assets
           status=0
           python tools/stage_windows_receipt.py --archive "$ARCHIVE" --arch "$ARCH" \
-            --configuration "$CONFIG" --out-dir provenance-assets || status=1
+            --configuration "$CONFIG" --variant "$VARIANT" --out-dir provenance-assets || status=1
           python tools/write_legal_manifest.py provenance/legal-manifest.json \
             --archive "$ARCHIVE" --source-root build/src/skia --out-dir "$ARCH=$dir" \
             --platform win --variant "$VARIANT" --configuration "$CONFIG" \
@@ -648,7 +648,8 @@ jobs:
             echo "::error::the toolchain receipt or legal manifest does not prove what it claims; see the ${{ steps.archive.outputs.name }}-provenance artifact"
             exit 1
           fi
-          python3 tools/write_linux_toolchain_receipt.py "${receipts[0]}" --archive "$ARCHIVE" --check
+          python3 tools/write_linux_toolchain_receipt.py "${receipts[0]}" --archive "$ARCHIVE" --check \
+            --arch "${{ matrix.arch }}" --configuration "${{ matrix.config || 'Release' }}" --variant "${{ matrix.variant }}"
           python3 tools/write_legal_manifest.py "${manifests[0]}" --archive "$ARCHIVE" --check
 
       - name: Prove Windows provenance assets
@@ -665,7 +666,7 @@ jobs:
             exit 1
           fi
           python tools/stage_windows_receipt.py --archive "$ARCHIVE" --arch "${{ matrix.arch }}" \
-            --configuration "${{ matrix.config || 'Release' }}" --check "${receipts[0]}"
+            --configuration "${{ matrix.config || 'Release' }}" --variant "${{ matrix.variant }}" --check "${receipts[0]}"
           python tools/write_legal_manifest.py "${manifests[0]}" --archive "$ARCHIVE" --check
 
 
@@ -1049,7 +1050,8 @@ jobs:
             echo "::error::the toolchain receipt or legal manifest does not prove what it claims; see the skia-build-linux-x64-gpu-release-provenance artifact"
             exit 1
           fi
-          python3 tools/write_linux_toolchain_receipt.py "${receipts[0]}" --archive "$ARCHIVE" --check
+          python3 tools/write_linux_toolchain_receipt.py "${receipts[0]}" --archive "$ARCHIVE" --check \
+            --arch x64 --configuration Release --variant gpu
           python3 tools/write_legal_manifest.py "${manifests[0]}" --archive "$ARCHIVE" --check
 
   create-xcframework:
@@ -1292,7 +1294,7 @@ jobs:
             exit 1
           fi
           python3 src/tools/stage_windows_receipt.py --archive "$archive" --arch arm64 \
-            --configuration Release --check "${receipts[0]}"
+            --configuration Release --variant gpu --check "${receipts[0]}"
           python3 src/tools/write_legal_manifest.py "${manifests[0]}" --archive "$archive" --check
       # A first backfill uploads a new asset.  Re-running it is safe: identical
       # bytes are skipped, and a rebuild with different bytes is refused unless
@@ -1361,7 +1363,7 @@ jobs:
               exit 1
             fi
             python3 src/tools/stage_windows_receipt.py --archive "artifact/$config/$name.zip" --arch x64 \
-              --configuration "${config^}" --check "${receipts[0]}"
+              --configuration "${config^}" --variant gpu --check "${receipts[0]}"
             python3 src/tools/write_legal_manifest.py "${manifests[0]}" --archive "artifact/$config/$name.zip" --check
           done
       - name: Publish Windows x64 assets to existing release
@@ -1433,7 +1435,8 @@ jobs:
               echo "::error::$name: expected one toolchain receipt, one legal manifest and one attestation bundle"
               exit 1
             fi
-            python3 src/tools/write_linux_toolchain_receipt.py "${receipts[0]}" --archive "artifact/$arch/$name.zip" --check
+            python3 src/tools/write_linux_toolchain_receipt.py "${receipts[0]}" --archive "artifact/$arch/$name.zip" --check \
+              --arch "$arch" --configuration Release --variant gpu
             python3 src/tools/write_legal_manifest.py "${manifests[0]}" --archive "artifact/$arch/$name.zip" --check
           done
       - name: Publish Linux assets to existing release

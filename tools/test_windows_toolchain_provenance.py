@@ -75,7 +75,7 @@ class WindowsToolchainProvenanceTests(unittest.TestCase):
                                     win_sdk=self.layout.sdk, run=fake_run, **kwargs)
 
     def test_published_m153_receipt_is_rejected(self):
-        problems = MODULE.validate_receipt(json.loads(BROKEN_M153.read_text()), "arm64", "Release")
+        problems = MODULE.validate_receipt(json.loads(BROKEN_M153.read_text()), "arm64", "Release", "gpu")
         text = "\n".join(problems)
         self.assertIn("msvc_toolset_version", text)
         self.assertIn("windows_sdk_version", text)
@@ -97,7 +97,7 @@ class WindowsToolchainProvenanceTests(unittest.TestCase):
                          "e22740ed2852ebb3d5a801d6ac48b39788ed18bb")
         self.assertEqual(receipt["runtime"]["compile_flag"], "/MT")
         self.assertIn(TOOLSET, receipt["runtime"]["consumer_requirement"])
-        self.assertEqual(MODULE.validate_receipt(receipt, "arm64", "Release"), [])
+        self.assertEqual(MODULE.validate_receipt(receipt, "arm64", "Release", "gpu"), [])
 
     def test_invalid_builder_ref_is_rejected(self):
         with self.assertRaises(ValueError):
@@ -111,12 +111,12 @@ class WindowsToolchainProvenanceTests(unittest.TestCase):
         self.assertEqual(receipt["target"]["architecture"], "arm64ec")
         self.assertTrue(receipt["producer"]["skia_gn_compiler"]["path"].endswith(
             os.path.join("HostX64", "arm64", "cl.exe")))
-        self.assertEqual(MODULE.validate_receipt(receipt, "arm64ec", "Release"), [])
+        self.assertEqual(MODULE.validate_receipt(receipt, "arm64ec", "Release", "gpu"), [])
 
     def test_unresolvable_toolchain_fails_validation(self):
         receipt = MODULE.build_receipt("arm64", "Release", "gpu", vc_dir=self.tmp / "missing",
                                        win_sdk=self.tmp / "missing", run=fake_run)
-        problems = MODULE.validate_receipt(receipt, "arm64", "Release")
+        problems = MODULE.validate_receipt(receipt, "arm64", "Release", "gpu")
         self.assertTrue(any("msvc_toolset_version" in p for p in problems), problems)
         self.assertTrue(any("windows_sdk_version" in p for p in problems), problems)
 
@@ -168,18 +168,35 @@ class WindowsToolchainProvenanceTests(unittest.TestCase):
         self.assertEqual(built[1], "14.44.35207")
 
     def test_wrong_architecture_is_rejected(self):
-        problems = MODULE.validate_receipt(self.receipt(), "x64", "Release")
+        problems = MODULE.validate_receipt(self.receipt(), "x64", "Release", "gpu")
         self.assertTrue(any("architecture" in p for p in problems), problems)
+
+    def test_receipt_for_another_platform_or_variant_is_rejected(self):
+        for key, value in (("platform", "linux"), ("variant", "cpu"), ("configuration", "Debug")):
+            receipt = self.receipt()
+            receipt["target"][key] = value
+            problems = MODULE.validate_receipt(receipt, "arm64", "Release", "gpu")
+            self.assertTrue(any(f"target.{key}" in p for p in problems), (key, problems))
+
+    def test_unknown_expected_architecture_is_rejected(self):
+        problems = MODULE.validate_receipt(self.receipt(), "riscv64", "Release", "gpu")
+        self.assertTrue(any("not a Windows architecture" in p for p in problems), problems)
+
+    def test_check_mode_requires_the_expected_cell(self):
+        for args in (["--arch", "arm64", "--configuration", "Release"],
+                     ["--arch", "arm64", "--variant", "gpu"]):
+            with self.subTest(args=args), self.assertRaises(SystemExit):
+                MODULE.main([str(BROKEN_M153), *args, "--check"])
 
     def test_main_refuses_to_write_an_unprovable_receipt(self):
         out = self.tmp / "msvc-toolchain.json"
         with mock.patch.object(MODULE, "find_msvc", return_value=None), \
                 mock.patch.object(MODULE, "_run", fake_run):
-            code = MODULE.main([str(out), "--arch", "arm64"])
+            code = MODULE.main([str(out), "--arch", "arm64", "--configuration", "Release", "--variant", "gpu"])
         self.assertEqual(code, 1)
 
     def test_check_mode_rejects_the_published_receipt(self):
-        self.assertEqual(MODULE.main([str(BROKEN_M153), "--arch", "arm64", "--check"]), 1)
+        self.assertEqual(MODULE.main([str(BROKEN_M153), "--arch", "arm64", "--configuration", "Release", "--variant", "gpu", "--check"]), 1)
 
     def test_receipt_is_json_serializable(self):
         json.dumps(self.receipt())

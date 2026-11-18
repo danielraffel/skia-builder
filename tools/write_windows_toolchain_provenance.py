@@ -205,9 +205,13 @@ def build_receipt(arch: str, configuration: str, variant: str, *,
     }
 
 
-def validate_receipt(receipt: dict, expect_arch: str | None = None,
-                     expect_config: str | None = None) -> list[str]:
-    """Return every reason this receipt does not prove what it claims."""
+def validate_receipt(receipt: dict, expect_arch: str, expect_config: str,
+                     expect_variant: str) -> list[str]:
+    """Return every reason this receipt does not prove the named Windows cell.
+
+    The expected cell is required: a receipt only proves the cell the caller
+    built, never whatever target it claims.
+    """
     problems = []
     producer = receipt.get("producer") or {}
     target = receipt.get("target") or {}
@@ -246,10 +250,16 @@ def validate_receipt(receipt: dict, expect_arch: str | None = None,
     if toolset and toolset not in str(dawn.get("path", "")):
         problems.append(f"dawn_cmake_compiler.path {dawn.get('path')!r} "
                         f"is not from toolset {toolset}")
-    if expect_arch and str(target.get("architecture", "")).lower() != expect_arch.lower():
+    if target.get("platform") != "windows":
+        problems.append(f"target.platform {target.get('platform')!r} != 'windows'")
+    if str(expect_arch or "").lower() not in GN_TARGET_CPU:
+        problems.append(f"expected architecture {expect_arch!r} is not a Windows architecture")
+    elif str(target.get("architecture", "")).lower() != expect_arch.lower():
         problems.append(f"target.architecture {target.get('architecture')!r} != {expect_arch!r}")
-    if expect_config and str(target.get("configuration", "")).lower() != expect_config.lower():
+    if not expect_config or str(target.get("configuration", "")).lower() != expect_config.lower():
         problems.append(f"target.configuration {target.get('configuration')!r} != {expect_config!r}")
+    if not expect_variant or target.get("variant") != expect_variant:
+        problems.append(f"target.variant {target.get('variant')!r} != {expect_variant!r}")
     return problems
 
 
@@ -258,8 +268,8 @@ def main(argv: list[str] | None = None) -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("output", type=Path)
     parser.add_argument("--arch", required=True)
-    parser.add_argument("--configuration", default="Release")
-    parser.add_argument("--variant", default="gpu")
+    parser.add_argument("--configuration", required=True)
+    parser.add_argument("--variant", required=True)
     parser.add_argument("--toolchain-ninja", type=Path,
                         help="GN's toolchain.ninja; the cl.exe it names is authoritative")
     parser.add_argument("--builder-ref",
@@ -280,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(receipt, indent=2))
-    problems = validate_receipt(receipt, args.arch, args.configuration)
+    problems = validate_receipt(receipt, args.arch, args.configuration, args.variant)
     if problems:
         print(f"error: {args.output} is not a valid toolchain receipt:", file=sys.stderr)
         for problem in problems:

@@ -56,6 +56,7 @@ from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apple_archive  # noqa: E402
+import archive_cell  # noqa: E402
 
 SCHEMA = "skia-builder.legal-manifest.v1"
 LICENSE_RESOLUTION = "nearest-ancestor-license-file"
@@ -774,6 +775,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--platform", default="")
     parser.add_argument("--variant", default="")
     parser.add_argument("--configuration", default="")
+    parser.add_argument("--target", default="", help="device or simulator (iOS/visionOS)")
     parser.add_argument("--content-addressed-dir", type=Path,
                         help="also write <archive>.legal-manifest.sha256-<digest>.json here")
     parser.add_argument("--check", action="store_true",
@@ -781,11 +783,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.check:
-        manifest = json.loads(args.output.read_text(encoding="utf-8"))
+        data = args.output.read_bytes()
+        manifest = json.loads(data.decode("utf-8"))
         match = CONTENT_ADDRESSED_RE.search(args.output.name)
         problems = validate_manifest(manifest, args.archive)
-        if match and match.group(1) != sha256_file(args.output):
+        # The cell is the one the archive's name promises, not the manifest's own claim.
+        problems += archive_cell.cell_problems(args.archive.name, manifest.get("cell"), label="cell")
+        if not match:
+            problems.append(f"{args.output.name} is not a content-addressed legal manifest name")
+        elif match.group(1) != hashlib.sha256(data).hexdigest():
             problems.append(f"{args.output.name} does not carry its own sha256")
+        elif args.output.name != content_addressed_name(args.archive.name, data):
+            problems.append(f"{args.output.name} is not the exact content-addressed name for {args.archive.name}")
         for problem in problems:
             print(f"legal-manifest: {problem}", file=sys.stderr)
         if problems:
@@ -805,7 +814,8 @@ def main(argv: list[str] | None = None) -> int:
                        toolchain_roots=args.toolchain_root or default_toolchain_roots(args.platform),
                        redistributed_roots=default_redistributed_roots(args.platform))
     cell = {"platform": args.platform, "variant": args.variant,
-            "configuration": args.configuration, "architectures": sorted(out_dirs)}
+            "configuration": args.configuration, "architectures": sorted(out_dirs),
+            **({"target": args.target} if args.target else {})}
     expected = {name: value for name, value in (("skia", args.expect_skia_revision),
                                                 ("dawn", args.expect_dawn_revision)) if value}
     manifest = build_manifest(args.archive, graph, cell, gn, expected)

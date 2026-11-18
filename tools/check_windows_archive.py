@@ -80,7 +80,8 @@ def check_archive(path: Path) -> list[str]:
             problems.append(f"expected one msvc-toolchain.json, found {len(receipts)}")
         else:
             receipt = json.loads(archive.read(receipts[0]))
-            problems += [f"{receipts[0]}: {p}" for p in validate_receipt(receipt, arch, config_dir)]
+            problems += [f"{receipts[0]}: {p}" for p in validate_receipt(receipt, arch, config_dir,
+                                                                           match["variant"])]
         lib_dir = f"/lib/{config_dir}/{arch}/"
         libs = [n for n in names if lib_dir in n and n.lower().endswith(".lib")]
         stray = [n for n in names if n.lower().endswith(".lib") and lib_dir not in n]

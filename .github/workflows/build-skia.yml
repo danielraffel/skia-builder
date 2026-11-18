@@ -82,6 +82,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       tag: ${{ steps.lock.outputs.tag }}
+      publish: ${{ steps.lock.outputs.publish }}
       milestone: ${{ steps.lock.outputs.milestone }}
       skia: ${{ steps.lock.outputs.skia }}
       dawn: ${{ steps.lock.outputs.dawn }}
@@ -115,13 +116,15 @@ jobs:
             exit 1
           fi
           lock_args=()
+          python3 tools/release_tag.py "$SKIA_BRANCH" "$RELEASE_TAG" > release-tag.env
+          base="$(sed -n 's/^base=//p' release-tag.env)"
+          publish="$(sed -n 's/^publish=//p' release-tag.env)"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
           if [ -n "$RELEASE_TAG" ]; then
-            if [ "$RELEASE_TAG" != "$SKIA_BRANCH" ]; then
-              echo "::error::release_tag=$RELEASE_TAG must equal skia_branch=$SKIA_BRANCH: a backfill builds that release's own milestone"
-              exit 1
-            fi
+            # The lock comes from the base milestone release even when the run
+            # publishes an -attested.<n> re-cut, so the revisions are unchanged.
             mkdir -p published-lock
-            gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            gh release download "$base" --repo "$GITHUB_REPOSITORY" \
               --pattern skia-release-lock.json --dir published-lock
             lock_args=(--from-release-lock published-lock/skia-release-lock.json)
           fi
@@ -406,7 +409,7 @@ jobs:
         if: steps.check.outputs.should_build == 'true' && runner.os == 'Windows' && matrix.variant == 'gpu'
         shell: pwsh
         run: |
-          py -3 tools/write_windows_toolchain_provenance.py "$env:RUNNER_TEMP/msvc-toolchain.json" --arch "${{ matrix.arch }}" --configuration "${{ matrix.config || 'Release' }}" --variant "${{ matrix.variant }}"
+          py -3 tools/write_windows_toolchain_provenance.py "$env:RUNNER_TEMP/msvc-toolchain.json" --arch "${{ matrix.arch }}" --configuration "${{ matrix.config || 'Release' }}" --variant "${{ matrix.variant }}" --builder-ref "${{ github.sha }}"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # - name: Build Skia (Debug)
@@ -458,6 +461,7 @@ jobs:
           $config = "${{ matrix.config || 'Release' }}"
           $out = "build/${{ matrix.platform }}-${{ matrix.variant }}/msvc-toolchain.json"
           $receiptArgs = @($out, "--arch", $arch, "--configuration", $config, "--variant", "${{ matrix.variant }}")
+          $receiptArgs += @("--builder-ref", "${{ github.sha }}")
           if ("${{ inputs.test_mode }}" -ne "true") {
             # The cl.exe GN actually built with is authoritative.
             $receiptArgs += @("--toolchain-ninja", "build/tmp/skia/${{ matrix.platform }}_${config}_${arch}_${{ matrix.variant }}/toolchain.ninja")
@@ -501,6 +505,59 @@ jobs:
         shell: bash
         run: python tools/check_windows_archive.py "${{ steps.archive.outputs.name }}.zip"
 
+      # Linux and Windows cells publish the same two records the Apple cells
+      # do: a legal manifest and a toolchain receipt, written beside the
+      # archive and bound to its sha256 so the archive's bytes stay unchanged.
+      # The Windows receipt is also inside the archive; it is staged as a
+      # content-addressed copy after being proven.  A record that does not
+      # prove what it claims is kept for diagnosis under provenance/ and the
+      # prove step after the upload fails the job.
+      - name: Write Linux legal manifest and toolchain receipt
+        if: steps.check.outputs.should_build == 'true' && matrix.platform == 'linux' && !inputs.test_mode
+        shell: bash
+        run: |
+          set -uo pipefail
+          CONFIG="${{ matrix.config || 'Release' }}"
+          ARCH="${{ matrix.arch }}"
+          VARIANT="${{ matrix.variant }}"
+          ARCHIVE="${{ steps.archive.outputs.name }}.zip"
+          dir="build/tmp/skia/linux_${CONFIG}_${ARCH}_${VARIANT}"
+          mkdir -p provenance provenance-assets
+          status=0
+          python3 tools/write_linux_toolchain_receipt.py provenance/linux-toolchain.json \
+            --archive "$ARCHIVE" --arch "$ARCH" --configuration "$CONFIG" --variant "$VARIANT" \
+            --toolchain-ninja "$dir/toolchain.ninja" --link-probe \
+            --content-addressed-dir provenance-assets || status=1
+          python3 tools/write_legal_manifest.py provenance/legal-manifest.json \
+            --archive "$ARCHIVE" --source-root build/src/skia --out-dir "$ARCH=$dir" \
+            --platform linux --variant "$VARIANT" --configuration "$CONFIG" \
+            --expect-skia-revision "$SKIA_REVISION" --expect-dawn-revision "$DAWN_REVISION" \
+            --content-addressed-dir provenance-assets || status=1
+          echo "provenance_status=$status" >> "$GITHUB_ENV"
+          ls -la provenance provenance-assets
+
+      - name: Write Windows legal manifest and stage toolchain receipt
+        if: steps.check.outputs.should_build == 'true' && runner.os == 'Windows' && matrix.variant == 'gpu' && !inputs.test_mode
+        shell: bash
+        run: |
+          set -uo pipefail
+          CONFIG="${{ matrix.config || 'Release' }}"
+          ARCH="${{ matrix.arch }}"
+          VARIANT="${{ matrix.variant }}"
+          ARCHIVE="${{ steps.archive.outputs.name }}.zip"
+          dir="build/tmp/skia/win_${CONFIG}_${ARCH}_${VARIANT}"
+          mkdir -p provenance provenance-assets
+          status=0
+          python tools/stage_windows_receipt.py --archive "$ARCHIVE" --arch "$ARCH" \
+            --configuration "$CONFIG" --variant "$VARIANT" --out-dir provenance-assets || status=1
+          python tools/write_legal_manifest.py provenance/legal-manifest.json \
+            --archive "$ARCHIVE" --source-root build/src/skia --out-dir "$ARCH=$dir" \
+            --platform win --variant "$VARIANT" --configuration "$CONFIG" \
+            --expect-skia-revision "$SKIA_REVISION" --expect-dawn-revision "$DAWN_REVISION" \
+            --content-addressed-dir provenance-assets || status=1
+          echo "provenance_status=$status" >> "$GITHUB_ENV"
+          ls -la provenance provenance-assets
+
       # The archive carries no license or toolchain record, and adding one
       # would change bytes consumers pin.  Both records are written beside it
       # instead, bound to its sha256, and named after their own sha256 so a
@@ -539,7 +596,7 @@ jobs:
             "${receipt_args[@]}" --content-addressed-dir provenance-assets || status=1
           python3 tools/write_legal_manifest.py provenance/legal-manifest.json \
             --archive "$ARCHIVE" --source-root build/src/skia "${out_args[@]}" \
-            --platform "$PLATFORM" --variant "$VARIANT" --configuration "$CONFIG" \
+            --platform "$PLATFORM" --target "${{ matrix.target }}" --variant "$VARIANT" --configuration "$CONFIG" \
             --expect-skia-revision "$SKIA_REVISION" --expect-dawn-revision "$DAWN_REVISION" \
             --content-addressed-dir provenance-assets || status=1
           echo "provenance_status=$status" >> "$GITHUB_ENV"
@@ -554,8 +611,8 @@ jobs:
             ${{ steps.archive.outputs.name }}.zip
             provenance-assets/*.json
 
-      - name: Upload provenance diagnostics (Apple)
-        if: always() && steps.check.outputs.should_build == 'true' && runner.os == 'macOS' && !inputs.test_mode
+      - name: Upload provenance diagnostics
+        if: always() && steps.check.outputs.should_build == 'true' && !inputs.test_mode
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.archive.outputs.name }}-provenance
@@ -576,7 +633,44 @@ jobs:
             exit 1
           fi
           python3 tools/write_apple_toolchain_receipt.py "${receipts[0]}" --archive "$ARCHIVE" --check
-          python3 tools/write_legal_manifest.py "${manifests[0]}" --archive "$ARCHIVE" --check
+          python3 tools/write_legal_manifest.py "${manifests[0]}" --archive "$ARCHIVE" --check \
+            --expect-skia-revision "$SKIA_REVISION" --expect-dawn-revision "$DAWN_REVISION"
+
+      - name: Prove Linux provenance assets
+        if: steps.check.outputs.should_build == 'true' && matrix.platform == 'linux' && !inputs.test_mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="${{ steps.archive.outputs.name }}.zip"
+          shopt -s nullglob
+          receipts=(provenance-assets/*.linux-toolchain.sha256-*.json)
+          manifests=(provenance-assets/*.legal-manifest.sha256-*.json)
+          if [ "${provenance_status:-1}" != 0 ] || [ ${#receipts[@]} -ne 1 ] || [ ${#manifests[@]} -ne 1 ]; then
+            echo "::error::the toolchain receipt or legal manifest does not prove what it claims; see the ${{ steps.archive.outputs.name }}-provenance artifact"
+            exit 1
+          fi
+          python3 tools/write_linux_toolchain_receipt.py "${receipts[0]}" --archive "$ARCHIVE" --check \
+            --arch "${{ matrix.arch }}" --configuration "${{ matrix.config || 'Release' }}" --variant "${{ matrix.variant }}"
+          python3 tools/write_legal_manifest.py "${manifests[0]}" --archive "$ARCHIVE" --check \
+            --expect-skia-revision "$SKIA_REVISION" --expect-dawn-revision "$DAWN_REVISION"
+
+      - name: Prove Windows provenance assets
+        if: steps.check.outputs.should_build == 'true' && runner.os == 'Windows' && matrix.variant == 'gpu' && !inputs.test_mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="${{ steps.archive.outputs.name }}.zip"
+          shopt -s nullglob
+          receipts=(provenance-assets/*.msvc-toolchain.sha256-*.json)
+          manifests=(provenance-assets/*.legal-manifest.sha256-*.json)
+          if [ "${provenance_status:-1}" != 0 ] || [ ${#receipts[@]} -ne 1 ] || [ ${#manifests[@]} -ne 1 ]; then
+            echo "::error::the toolchain receipt or legal manifest does not prove what it claims; see the ${{ steps.archive.outputs.name }}-provenance artifact"
+            exit 1
+          fi
+          python tools/stage_windows_receipt.py --archive "$ARCHIVE" --arch "${{ matrix.arch }}" \
+            --configuration "${{ matrix.config || 'Release' }}" --variant "${{ matrix.variant }}" --check "${receipts[0]}"
+          python tools/write_legal_manifest.py "${manifests[0]}" --archive "$ARCHIVE" --check \
+            --expect-skia-revision "$SKIA_REVISION" --expect-dawn-revision "$DAWN_REVISION"
 
 
   # The build jobs run Skia's DEPS-fetched third-party code, so none of them
@@ -631,6 +725,8 @@ jobs:
           for cell in cells/*/; do
             [ -d "$cell/provenance-assets" ] || continue
             name="$(basename "$cell")"
+            # Linux, Windows and wasm cells are attested by attest-native.
+            case "$name" in skia-build-mac-*|skia-build-ios-*|skia-build-visionos-*) ;; *) continue ;; esac
             (cd "$cell" && sha256sum "$name.zip" provenance-assets/*.json) | \
               sed -E 's#  (provenance-assets/)?#  #' >> subjects.sha256
             echo "$name" >> cells.txt
@@ -669,6 +765,118 @@ jobs:
           name: skia-build-apple-attestation
           path: attestation/*.sigstore.json
 
+  # The same attestation for the Linux, Windows and wasm cells. The portable
+  # Linux x64 archive comes from its own job, which may be skipped (a Windows
+  # dispatch builds no Linux), so this job waits for it without requiring it.
+  attest-native:
+    needs: [build-skia, portable-linux-x64]
+    if: ${{ !cancelled() && needs.build-skia.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.portable-linux-x64.result) }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download cell outputs
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: skia-build-*-{release,debug}
+          path: cells
+      - name: List the attested subjects
+        id: subjects
+        env:
+          TEST_MODE: ${{ inputs.test_mode }}
+        run: |
+          set -euo pipefail
+          # download-artifact unpacks a lone matching artifact straight into
+          # cells/ rather than cells/<name>/, which is what a single-platform
+          # dispatch produces. Give it its own directory so the loop sees it.
+          shopt -s nullglob
+          lone=(cells/*.zip)
+          if [ ${#lone[@]} -eq 1 ]; then
+            name="$(basename "${lone[0]}" .zip)"
+            mkdir -p "cells-lone/$name"
+            mv cells/* "cells-lone/$name/"
+            rmdir cells
+            mv cells-lone cells
+          fi
+          shopt -u nullglob
+          # Provenance records still at the top level are a cell this
+          # step did not recognise; refuse it rather than skip the attestation
+          # unnoticed.
+          if [ -e cells/provenance-assets ]; then
+            echo "::error::unrecognised cells/ layout; not attesting"
+            ls -la cells
+            exit 1
+          fi
+          : > subjects.sha256
+          missing=0
+          for cell in cells/*/; do
+            name="$(basename "$cell")"
+            # Apple cells are attested by attest-apple.
+            case "$name" in
+              skia-build-linux-*|skia-build-win-*) records=required ;;
+              # wasm and Android cells publish no records; their archive is
+              # still attested.
+              skia-build-wasm-*|skia-build-android-*) records=none ;;
+              *) continue ;;
+            esac
+            if [ "$TEST_MODE" = "true" ]; then
+              continue  # test-mode archives are placeholders and are never attested
+            fi
+            if [ ! -f "$cell/$name.zip" ]; then
+              echo "::error::$name has no $name.zip"
+              missing=1
+              continue
+            fi
+            if [ "$records" = required ] && [ ! -d "$cell/provenance-assets" ]; then
+              echo "::error::$name has no provenance records; a Linux or Windows archive is never published unattested"
+              missing=1
+              continue
+            fi
+            shopt -s nullglob
+            files=("$name.zip")
+            for record in "$cell"/provenance-assets/*.json; do files+=("provenance-assets/${record##*/}"); done
+            shopt -u nullglob
+            (cd "$cell" && sha256sum "${files[@]}") | \
+              sed -E 's#  (provenance-assets/)?#  #' >> subjects.sha256
+            echo "$name" >> cells.txt
+          done
+          [ "$missing" = 0 ] || exit 1
+          cat subjects.sha256
+          if [ ! -s subjects.sha256 ]; then
+            echo "no Linux, Windows or wasm cell to attest" >> "$GITHUB_STEP_SUMMARY"
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Attest archives and provenance records
+        id: attest
+        if: steps.subjects.outputs.present == 'true'
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-checksums: subjects.sha256
+      # The Sigstore bundle lets a consumer verify offline. Each cell
+      # gets a copy named after its archive and the bundle's own sha256.
+      - name: Keep the attestation bundle per cell
+        if: steps.subjects.outputs.present == 'true'
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          mkdir -p attestation
+          digest="$(sha256sum "$BUNDLE" | cut -d' ' -f1)"
+          while read -r name; do
+            cp "$BUNDLE" "attestation/${name}.provenance-attestation.sha256-${digest}.sigstore.json"
+          done < cells.txt
+          ls -la attestation
+      - name: Upload attestation bundles
+        if: steps.subjects.outputs.present == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: skia-build-native-attestation
+          path: attestation/*.sigstore.json
+
   # Portable Linux x64 Skia+Dawn, built in an Ubuntu 22.04 container so the shipped
   # libskia.a / libdawn_combined.a carry a glibc 2.34 floor (loadable on Ubuntu 22.04+,
   # Debian 12+, RHEL/Rocky 9+, Fedora 35+). The default ubuntu-latest matrix cell leaked
@@ -689,6 +897,7 @@ jobs:
     env:
       SKIA_BRANCH: ${{ needs.resolve-skia.outputs.tag }}
       SKIA_REVISION: ${{ needs.resolve-skia.outputs.skia }}
+      DAWN_REVISION: ${{ needs.resolve-skia.outputs.dawn }}
     steps:
       - name: Install Ubuntu 22.04 build deps (no sudo — container runs as root)
         if: ${{ !inputs.test_mode }}
@@ -821,11 +1030,59 @@ jobs:
       - name: Check Linux archive links without BackupRefPtr
         if: ${{ !inputs.test_mode }}
         run: python3 tools/check_linux_archive.py skia-build-linux-x64-gpu-release.zip
+      # The same legal manifest and toolchain receipt every Linux, Windows
+      # and Apple cell publishes; the receipt reads this container's compiler,
+      # glibc and libstdc++, so it is written here and not in a runner step.
+      - name: Write Linux legal manifest and toolchain receipt
+        if: ${{ !inputs.test_mode }}
+        run: |
+          set -uo pipefail
+          ARCHIVE="skia-build-linux-x64-gpu-release.zip"
+          dir="build/tmp/skia/linux_Release_x64_gpu"
+          mkdir -p provenance provenance-assets
+          status=0
+          python3 tools/write_linux_toolchain_receipt.py provenance/linux-toolchain.json \
+            --archive "$ARCHIVE" --arch x64 --configuration Release --variant gpu \
+            --toolchain-ninja "$dir/toolchain.ninja" --link-probe \
+            --container-image "ubuntu@sha256:74b12b11ffa550fba1929ad4d8d16533c34f6612728469671afba1b03b66881c" \
+            --content-addressed-dir provenance-assets || status=1
+          python3 tools/write_legal_manifest.py provenance/legal-manifest.json \
+            --archive "$ARCHIVE" --source-root build/src/skia --out-dir "x64=$dir" \
+            --platform linux --variant gpu --configuration Release \
+            --expect-skia-revision "$SKIA_REVISION" --expect-dawn-revision "$DAWN_REVISION" \
+            --content-addressed-dir provenance-assets || status=1
+          echo "provenance_status=$status" >> "$GITHUB_ENV"
+          ls -la provenance provenance-assets
       - name: Upload artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: skia-build-linux-x64-gpu-release
-          path: skia-build-linux-x64-gpu-release.zip
+          path: |
+            skia-build-linux-x64-gpu-release.zip
+            provenance-assets/*.json
+      - name: Upload provenance diagnostics
+        if: ${{ always() && !inputs.test_mode }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: skia-build-linux-x64-gpu-release-provenance
+          path: provenance/
+          if-no-files-found: warn
+      - name: Prove Linux provenance assets
+        if: ${{ !inputs.test_mode }}
+        run: |
+          set -euo pipefail
+          ARCHIVE="skia-build-linux-x64-gpu-release.zip"
+          shopt -s nullglob
+          receipts=(provenance-assets/*.linux-toolchain.sha256-*.json)
+          manifests=(provenance-assets/*.legal-manifest.sha256-*.json)
+          if [ "${provenance_status:-1}" != 0 ] || [ ${#receipts[@]} -ne 1 ] || [ ${#manifests[@]} -ne 1 ]; then
+            echo "::error::the toolchain receipt or legal manifest does not prove what it claims; see the skia-build-linux-x64-gpu-release-provenance artifact"
+            exit 1
+          fi
+          python3 tools/write_linux_toolchain_receipt.py "${receipts[0]}" --archive "$ARCHIVE" --check \
+            --arch x64 --configuration Release --variant gpu
+          python3 tools/write_legal_manifest.py "${manifests[0]}" --archive "$ARCHIVE" --check \
+            --expect-skia-revision "$SKIA_REVISION" --expect-dawn-revision "$DAWN_REVISION"
 
   create-xcframework:
     needs: build-skia
@@ -934,12 +1191,12 @@ jobs:
 
   create-release:
     if: ${{ !inputs.skip_release && inputs.platforms == 'all' && github.ref == 'refs/heads/main' }}
-    needs: [resolve-skia, build-skia, create-xcframework, portable-linux-x64, attest-apple]
+    needs: [resolve-skia, build-skia, create-xcframework, portable-linux-x64, attest-apple, attest-native]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
-      RELEASE_TAG: ${{ needs.resolve-skia.outputs.tag }}${{ inputs.test_mode && '-test' || '' }}
+      RELEASE_TAG: ${{ needs.resolve-skia.outputs.publish || needs.resolve-skia.outputs.tag }}${{ inputs.test_mode && '-test' || '' }}
     steps:
       - name: Checkout repository (release tools)
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -999,8 +1256,8 @@ jobs:
         uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           body_path: release-notes.md
-          tag_name: ${{ needs.resolve-skia.outputs.tag }}${{ inputs.test_mode && '-test' || '' }}
-          name: ${{ needs.resolve-skia.outputs.tag }}${{ inputs.test_mode && ' (Test)' || '' }}
+          tag_name: ${{ needs.resolve-skia.outputs.publish || needs.resolve-skia.outputs.tag }}${{ inputs.test_mode && '-test' || '' }}
+          name: ${{ needs.resolve-skia.outputs.publish || needs.resolve-skia.outputs.tag }}${{ inputs.test_mode && ' (Test)' || '' }}
           draft: false
           prerelease: ${{ inputs.test_mode }}
           # Never delete-and-reupload a published asset; the guard step above
@@ -1033,8 +1290,11 @@ jobs:
   # gain the ARM64 artifact independently.
   publish-windows-arm64-backfill:
     if: ${{ !inputs.skip_release && inputs.platforms == 'win-arm64' && inputs.release_tag != '' && github.ref == 'refs/heads/main' }}
-    needs: [build-skia]
+    needs: [resolve-skia, build-skia, attest-native]
     runs-on: ubuntu-24.04
+    env:
+      SKIA_REVISION: ${{ needs.resolve-skia.outputs.skia }}
+      DAWN_REVISION: ${{ needs.resolve-skia.outputs.dawn }}
     permissions:
       contents: write
     steps:
@@ -1047,8 +1307,30 @@ jobs:
         with:
           name: skia-build-win-arm64-gpu-release
           path: artifact
+      - name: Download attestation bundle
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: skia-build-native-attestation
+          path: attestation
       - name: Smoke-check ARM64 Windows archive
         run: python3 src/tools/check_windows_archive.py artifact/skia-build-win-arm64-gpu-release.zip
+      - name: Prove ARM64 Windows provenance assets
+        run: |
+          set -euo pipefail
+          archive=artifact/skia-build-win-arm64-gpu-release.zip
+          shopt -s nullglob
+          receipts=(artifact/provenance-assets/*.msvc-toolchain.sha256-*.json)
+          manifests=(artifact/provenance-assets/*.legal-manifest.sha256-*.json)
+          bundles=(attestation/skia-build-win-arm64-gpu-release.provenance-attestation.sha256-*.sigstore.json)
+          if [ ${#receipts[@]} -ne 1 ] || [ ${#manifests[@]} -ne 1 ] || [ ${#bundles[@]} -ne 1 ]; then
+            echo "::error::expected one toolchain receipt, one legal manifest and one attestation bundle for the archive"
+            exit 1
+          fi
+          python3 src/tools/stage_windows_receipt.py --archive "$archive" --arch arm64 \
+            --configuration Release --variant gpu --check "${receipts[0]}"
+          python3 src/tools/check_attestation_bundle.py "${bundles[0]}" "$archive" "${receipts[0]}" "${manifests[0]}"
+          python3 src/tools/write_legal_manifest.py "${manifests[0]}" --archive "$archive" --check \
+            --expect-skia-revision "$SKIA_REVISION" --expect-dawn-revision "$DAWN_REVISION"
       # A first backfill uploads a new asset.  Re-running it is safe: identical
       # bytes are skipped, and a rebuild with different bytes is refused unless
       # replace_asset names the asset and replace_reason says why, in which
@@ -1066,7 +1348,87 @@ jobs:
             replace=(--allow-replace "$REPLACE_ASSET" --reason "$REPLACE_REASON")
           fi
           python3 src/tools/release_asset_guard.py --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" \
-            publish artifact/skia-build-win-arm64-gpu-release.zip ${replace[@]+"${replace[@]}"} \
+            publish artifact/skia-build-win-arm64-gpu-release.zip \
+            artifact/provenance-assets/*.json attestation/*.sigstore.json \
+            ${replace[@]+"${replace[@]}"} \
+            --repin-hint "$REPIN_HINT"
+
+  # Backfill the Windows x64 archives (release and debug) of an existing
+  # milestone release, with their legal manifests, toolchain receipts and
+  # attestation. The x64 cells build together, so both archives are published.
+  publish-windows-x64-backfill:
+    if: ${{ !inputs.skip_release && inputs.platforms == 'win-x64' && inputs.release_tag != '' && github.ref == 'refs/heads/main' }}
+    needs: [resolve-skia, build-skia, attest-native]
+    runs-on: ubuntu-24.04
+    env:
+      SKIA_REVISION: ${{ needs.resolve-skia.outputs.skia }}
+      DAWN_REVISION: ${{ needs.resolve-skia.outputs.dawn }}
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository (release tools)
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          path: src
+      - name: Download Windows x64 release artifact
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: skia-build-win-x64-gpu-release
+          path: artifact/release
+      - name: Download Windows x64 debug artifact
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: skia-build-win-x64-gpu-debug
+          path: artifact/debug
+      - name: Download attestation bundle
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: skia-build-native-attestation
+          path: attestation
+      - name: Smoke-check Windows x64 archives
+        run: python3 src/tools/check_windows_archive.py artifact/release/skia-build-win-x64-gpu-release.zip artifact/debug/skia-build-win-x64-gpu-debug.zip
+      - name: Prove Windows x64 provenance assets
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for config in release debug; do
+            name="skia-build-win-x64-gpu-$config"
+            receipts=("artifact/$config"/provenance-assets/*.msvc-toolchain.sha256-*.json)
+            manifests=("artifact/$config"/provenance-assets/*.legal-manifest.sha256-*.json)
+            bundles=(attestation/"$name".provenance-attestation.sha256-*.sigstore.json)
+            if [ ${#receipts[@]} -ne 1 ] || [ ${#manifests[@]} -ne 1 ] || [ ${#bundles[@]} -ne 1 ]; then
+              echo "::error::$name: expected one toolchain receipt, one legal manifest and one attestation bundle"
+              exit 1
+            fi
+            python3 src/tools/stage_windows_receipt.py --archive "artifact/$config/$name.zip" --arch x64 \
+              --configuration "${config^}" --variant gpu --check "${receipts[0]}"
+            python3 src/tools/check_attestation_bundle.py "${bundles[0]}" "artifact/$config/$name.zip" \
+              "${receipts[0]}" "${manifests[0]}"
+            python3 src/tools/write_legal_manifest.py "${manifests[0]}" --archive "artifact/$config/$name.zip" --check \
+              --expect-skia-revision "$SKIA_REVISION" --expect-dawn-revision "$DAWN_REVISION"
+          done
+      - name: Publish Windows x64 assets to existing release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          REPLACE_ASSET: ${{ inputs.replace_asset }}
+          REPLACE_REASON: ${{ inputs.replace_reason }}
+        run: |
+          set -euo pipefail
+          replace=()
+          IFS=',' read -r -a names <<< "$REPLACE_ASSET"
+          for name in "${names[@]}"; do
+            name="$(printf '%s' "$name" | tr -d '[:space:]')"
+            [ -n "$name" ] && replace+=(--allow-replace "$name")
+          done
+          if [ ${#replace[@]} -gt 0 ]; then
+            replace+=(--reason "$REPLACE_REASON")
+          fi
+          python3 src/tools/release_asset_guard.py --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" \
+            publish artifact/release/skia-build-win-x64-gpu-release.zip \
+            artifact/debug/skia-build-win-x64-gpu-debug.zip \
+            artifact/release/provenance-assets/*.json artifact/debug/provenance-assets/*.json \
+            attestation/*.sigstore.json ${replace[@]+"${replace[@]}"} \
             --repin-hint "$REPIN_HINT"
 
   # Republish the Linux archives of an existing milestone release without
@@ -1075,8 +1437,11 @@ jobs:
   # replace_reason; the guard records both digests in the release notes.
   publish-linux-backfill:
     if: ${{ !inputs.skip_release && inputs.platforms == 'linux' && inputs.release_tag != '' && github.ref == 'refs/heads/main' }}
-    needs: [build-skia, portable-linux-x64]
+    needs: [resolve-skia, build-skia, portable-linux-x64, attest-native]
     runs-on: ubuntu-24.04
+    env:
+      SKIA_REVISION: ${{ needs.resolve-skia.outputs.skia }}
+      DAWN_REVISION: ${{ needs.resolve-skia.outputs.dawn }}
     permissions:
       contents: write
     steps:
@@ -1088,14 +1453,39 @@ jobs:
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: skia-build-linux-x64-gpu-release
-          path: artifact
+          path: artifact/x64
       - name: Download Linux arm64 artifact
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: skia-build-linux-arm64-gpu-release
-          path: artifact
+          path: artifact/arm64
+      - name: Download attestation bundle
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: skia-build-native-attestation
+          path: attestation
       - name: Check Linux archives link without BackupRefPtr
-        run: python3 src/tools/check_linux_archive.py artifact/skia-build-linux-*-gpu-release.zip
+        run: python3 src/tools/check_linux_archive.py artifact/*/skia-build-linux-*-gpu-release.zip
+      - name: Prove Linux provenance assets
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for arch in x64 arm64; do
+            name="skia-build-linux-$arch-gpu-release"
+            receipts=("artifact/$arch"/provenance-assets/*.linux-toolchain.sha256-*.json)
+            manifests=("artifact/$arch"/provenance-assets/*.legal-manifest.sha256-*.json)
+            bundles=(attestation/"$name".provenance-attestation.sha256-*.sigstore.json)
+            if [ ${#receipts[@]} -ne 1 ] || [ ${#manifests[@]} -ne 1 ] || [ ${#bundles[@]} -ne 1 ]; then
+              echo "::error::$name: expected one toolchain receipt, one legal manifest and one attestation bundle"
+              exit 1
+            fi
+            python3 src/tools/write_linux_toolchain_receipt.py "${receipts[0]}" --archive "artifact/$arch/$name.zip" --check \
+              --arch "$arch" --configuration Release --variant gpu
+            python3 src/tools/check_attestation_bundle.py "${bundles[0]}" "artifact/$arch/$name.zip" \
+              "${receipts[0]}" "${manifests[0]}"
+            python3 src/tools/write_legal_manifest.py "${manifests[0]}" --archive "artifact/$arch/$name.zip" --check \
+              --expect-skia-revision "$SKIA_REVISION" --expect-dawn-revision "$DAWN_REVISION"
+          done
       - name: Publish Linux assets to existing release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1114,12 +1504,15 @@ jobs:
             replace+=(--reason "$REPLACE_REASON")
           fi
           python3 src/tools/release_asset_guard.py --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" \
-            publish artifact/skia-build-linux-x64-gpu-release.zip \
-            artifact/skia-build-linux-arm64-gpu-release.zip ${replace[@]+"${replace[@]}"} \
+            publish artifact/x64/skia-build-linux-x64-gpu-release.zip \
+            artifact/arm64/skia-build-linux-arm64-gpu-release.zip \
+            artifact/x64/provenance-assets/*.json artifact/arm64/provenance-assets/*.json \
+            attestation/*.sigstore.json ${replace[@]+"${replace[@]}"} \
             --repin-hint "$REPIN_HINT"
 
   trigger-matched-v8:
-    if: ${{ !inputs.skip_release && inputs.platforms == 'all' && !inputs.test_mode }}
+    # An -attested.<n> re-cut is not a new Skia milestone, so V8 is not re-triggered.
+    if: ${{ !inputs.skip_release && inputs.platforms == 'all' && !inputs.test_mode && needs.resolve-skia.outputs.publish == '' }}
     needs: [resolve-skia, create-release]
     runs-on: ubuntu-24.04
     steps:

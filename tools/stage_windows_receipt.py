@@ -1,0 +1,322 @@
+#!/usr/bin/env python3
+"""Stage a Windows archive's toolchain receipt as a content-addressed release asset.
+
+The Windows build writes ``msvc-toolchain.json`` (the MSVC toolset and SDK
+receipt) into the packaged tree.  That receipt stays as it is; this derives
+the release asset ``<archive>.msvc-toolchain.sha256-<digest>.json`` from it,
+in the same shape the Linux, wasm and Android receipts use
+(``skia-builder.msvc-toolchain-receipt.v1``):
+
+* ``archive``: the zip's name and sha256;
+* ``compiler``/``linker``/``archiver``: path, sha256, version and vendor of
+  ``cl.exe``, ``link.exe`` and ``lib.exe`` from the toolset the build used;
+* ``cpp_abi``: the MSVC STL release (the toolset version);
+* ``msvc_toolset`` and ``windows_sdk`` versions, and the runner image;
+* ``observed``: the COFF machine types of every object in every packaged
+  library, and ``source_receipt``: the digest of the receipt inside the archive.
+
+The in-archive receipt must pass ``write_windows_toolchain_provenance
+.validate_receipt`` first.  Both modes take the cell the caller built (``--arch``, ``--configuration``,
+``--variant``); the staged receipt and the receipt inside the archive must
+each name exactly that Windows cell.  ``--check`` re-derives everything that can be
+re-derived from the archive alone (digest binding, machines, source receipt)
+and validates the rest; it cannot re-hash tools that only exist on the runner.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import zipfile
+from pathlib import Path, PurePosixPath, PureWindowsPath
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import apple_archive  # noqa: E402
+import archive_cell  # noqa: E402
+import write_windows_toolchain_provenance as receipt_tool  # noqa: E402
+
+SCHEMA = "skia-builder.msvc-toolchain-receipt.v1"
+CONTENT_ADDRESSED_RE = re.compile(r"\.msvc-toolchain\.sha256-([0-9a-f]{64})\.json$")
+MEMBER_NAME = "msvc-toolchain.json"
+HEX_64 = re.compile(r"^[0-9a-f]{64}$")
+BAD_VALUE_RE = re.compile(r"^(unknown|error.*|)$", re.IGNORECASE)
+LINK_BANNER_RE = re.compile(r"Microsoft \(R\) Incremental Linker Version \d+\.\d+\.\d+")
+LIB_BANNER_RE = re.compile(r"Microsoft \(R\) Library Manager Version \d+\.\d+\.\d+")
+ARCH_MACHINES = {"x64": "x64", "arm64": "arm64", "arm64ec": "arm64ec", "x86": "x86"}
+
+
+def content_addressed_name(archive_name: str, data: bytes) -> str:
+    stem = archive_name[:-4] if archive_name.endswith(".zip") else archive_name
+    return f"{stem}.msvc-toolchain.sha256-{hashlib.sha256(data).hexdigest()}.json"
+
+
+def canonical_bytes(value: object) -> bytes:
+    return (json.dumps(value, sort_keys=True, indent=1) + "\n").encode("utf-8")
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def archive_receipt(archive: Path) -> bytes:
+    with zipfile.ZipFile(archive) as handle:
+        names = [info.filename for info in handle.infolist()
+                 if PurePosixPath(info.filename).name == MEMBER_NAME]
+        if len(names) != 1:
+            raise SystemExit(f"{archive.name}: expected one {MEMBER_NAME}, found {names}")
+        return handle.read(names[0])
+
+
+def observed_member_machines(archive: Path) -> tuple[dict[str, int], int]:
+    counts: dict[str, int] = {}
+    undecodable = 0
+    with zipfile.ZipFile(archive) as handle:
+        for info in handle.infolist():
+            if info.is_dir() or not info.filename.lower().endswith(".lib"):
+                continue
+            data = handle.read(info)
+            if not data.startswith(apple_archive.AR_MAGIC):
+                undecodable += 1
+                continue
+            for member in apple_archive.parse_archive(data).members:
+                machine = apple_archive.object_arch(member.data)
+                if machine:
+                    counts[machine] = counts.get(machine, 0) + 1
+                else:
+                    undecodable += 1
+    return dict(sorted(counts.items())), undecodable
+
+
+def observed_machines(archive: Path) -> dict[str, int]:
+    """Return recognized COFF member machines (for callers that only need counts)."""
+    return observed_member_machines(archive)[0]
+
+
+def run_banner(program: str) -> str:
+    try:
+        done = subprocess.run([program], capture_output=True, text=True, check=False)
+    except OSError as error:
+        return f"error: {error}"
+    for line in ((done.stdout or "") + (done.stderr or "")).splitlines():
+        if "Microsoft (R)" in line:
+            return line.strip()
+    return "unknown"
+
+
+def tool_row(path: str, vendor: str, banner: str, hasher=None) -> dict[str, str]:
+    row = {"vendor": vendor, "path": path, "version": banner, "sha256": "unknown"}
+    try:
+        # A supplied hasher gets the path exactly as recorded, so a lookup by
+        # that path does not depend on how the host's pathlib rewrites it.
+        row["sha256"] = hasher(path) if hasher else sha256_file(Path(path))
+    except OSError as error:
+        row["sha256"] = f"error: {error}"
+    return row
+
+
+def derive(archive: Path, source: dict, source_bytes: bytes, arch: str, configuration: str,
+           variant: str, banner=run_banner, hasher=None) -> dict:
+    producer = source.get("producer") or {}
+    cl = (producer.get("skia_gn_compiler") or {}).get("path", "")
+    # cl.exe is a Windows path.  Parse it as one on every host, so the
+    # Windows runner that stages this and the Linux job that re-checks it
+    # derive the same link.exe and lib.exe paths.
+    directory = str(PureWindowsPath(cl).parent) if cl else ""
+    link = f"{directory}\\link.exe"
+    lib = f"{directory}\\lib.exe"
+    toolset = producer.get("msvc_toolset_version", "unknown")
+    return {
+        "schema": SCHEMA,
+        "archive": {"name": archive.name, "sha256": sha256_file(archive)},
+        "target": {"platform": "windows", "architectures": [arch], "configuration": configuration,
+                   "variant": variant},
+        "compiler": {"cxx": tool_row(cl, "msvc", (producer.get("skia_gn_compiler") or {}).get("version", "unknown"), hasher)},
+        "linker": tool_row(link, "msvc", banner(link), hasher),
+        "archiver": tool_row(lib, "msvc", banner(lib), hasher),
+        "cpp_abi": {arch: {"stdlib": "msvc-stl", "stdlib_version": toolset}},
+        "msvc_toolset": {"version": toolset},
+        "windows_sdk": {"version": producer.get("windows_sdk_version", "unknown")},
+        "runner_image": {"name": os.environ.get("ImageOS", "local"),
+                         "version": os.environ.get("ImageVersion", "local")},
+        "observed": {"coff_machines": observed_machines(archive),
+                     "undecodable_members": observed_member_machines(archive)[1]},
+        "source_receipt": {"member": MEMBER_NAME, "sha256": hashlib.sha256(source_bytes).hexdigest()},
+    }
+
+
+DERIVED_FIELDS = ("archive", "target", "compiler", "linker", "archiver", "cpp_abi", "msvc_toolset",
+                  "windows_sdk", "observed", "source_receipt")
+
+
+def derived_field_problems(archive: Path, staged: dict, source: dict, source_bytes: bytes,
+                           arch: str, configuration: str, variant: str) -> list[str]:
+    """Every staged field that differs from what ``derive`` makes of the receipt inside the archive.
+
+    Only the link.exe/lib.exe banners and the tool hashes are measured on the
+    runner and cannot be re-derived here; they are taken from the staged
+    record for the exact paths ``derive`` names, so a staged row for any other
+    path, or any other copied or computed field, is a mismatch.  ``runner_image``
+    is the only field ``derive`` does not take from the archive or its receipt.
+    """
+    measured: dict[str, dict] = {}
+    for row in ((staged.get("compiler") or {}).get("cxx"), staged.get("linker"), staged.get("archiver")):
+        if isinstance(row, dict) and isinstance(row.get("path"), str):
+            measured[row["path"]] = row
+    expected = derive(archive, source, source_bytes, arch, configuration, variant,
+                      banner=lambda path: str((measured.get(str(path)) or {}).get("version", "unmeasured")),
+                      hasher=lambda path: str((measured.get(str(path)) or {}).get("sha256", "unmeasured")))
+    problems = [f"{key} does not match the receipt inside the archive: staged {staged.get(key)!r}, "
+                f"derived {expected[key]!r}"
+                for key in DERIVED_FIELDS if staged.get(key) != expected[key]]
+    # The tools report their own build number, which need not equal the
+    # toolset directory's (toolset 14.52.37025 ships link.exe 14.52.37029),
+    # so a banner must name the toolset's major.minor release.
+    toolset = str((source.get("producer") or {}).get("msvc_toolset_version", ""))
+    release = re.match(r"^(\d+\.\d+)\.\d+$", toolset)
+    for name in ("linker", "archiver"):
+        version = re.search(r"Version (\d+\.\d+)\.", str((staged.get(name) or {}).get("version", "")))
+        if not release or not version or version.group(1) != release.group(1):
+            problems.append(f"{name}.version is not from toolset {toolset!r}")
+    return problems
+
+
+def problems_for(archive: Path, staged: dict, source_bytes: bytes, arch: str,
+                 configuration: str, variant: str) -> list[str]:
+    """Every reason ``staged`` does not prove the named Windows cell of ``archive``.
+
+    Both the staged receipt and the receipt inside the archive must name the
+    cell the caller built (platform, architecture, configuration and variant).
+    """
+    try:
+        source = json.loads(source_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        return [f"receipt inside the archive is not JSON: {error}"]
+    problems = [f"archive receipt: {problem}"
+                for problem in receipt_tool.validate_receipt(source, arch, configuration, variant)]
+    walked: list[str] = []
+
+    def walk(value: object, where: str) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                walk(item, f"{where}.{key}" if where else key)
+        elif isinstance(value, str) and BAD_VALUE_RE.match(value.strip()):
+            walked.append(f"{where} = {value!r}")
+        elif value is None:
+            walked.append(f"{where} is null")
+    walk({key: staged.get(key) for key in ("target", "compiler", "linker", "archiver", "cpp_abi",
+                                           "msvc_toolset", "windows_sdk", "runner_image")}, "")
+    problems += walked
+    if staged.get("schema") != SCHEMA:
+        problems.append(f"schema = {staged.get('schema')!r}")
+    if (staged.get("archive") or {}).get("sha256") != sha256_file(archive):
+        problems.append("staged archive sha256 does not match the archive")
+    if (staged.get("archive") or {}).get("name") != archive.name:
+        problems.append(f"staged archive name {(staged.get('archive') or {}).get('name')!r} != {archive.name!r}")
+    if (staged.get("source_receipt") or {}).get("sha256") != hashlib.sha256(source_bytes).hexdigest():
+        problems.append("staged source_receipt is not the receipt inside the archive")
+    # The caller's cell must be the one the archive's own name promises.
+    problems += archive_cell.cell_problems(
+        archive.name, {"platform": "win", "target": "", "architectures": [arch],
+                       "configuration": configuration, "variant": variant}, label="--check cell")
+    target = staged.get("target") or {}
+    expected_machine = ARCH_MACHINES.get(str(arch).lower())
+    if not expected_machine:
+        problems.append(f"expected architecture {arch!r} is not a Windows architecture")
+    if target.get("platform") != "windows":
+        problems.append(f"target.platform {target.get('platform')!r} != 'windows'")
+    if not variant or target.get("variant") != variant:
+        problems.append(f"target.variant {target.get('variant')!r} != {variant!r}")
+    if target.get("architectures") != [arch]:
+        problems.append(f"target.architectures {target.get('architectures')!r} != {[arch]!r}")
+    if target.get("configuration") != configuration:
+        problems.append(f"target.configuration {target.get('configuration')!r} != {configuration!r}")
+    for name in ("compiler", "linker", "archiver"):
+        row = (staged.get("compiler") or {}).get("cxx") if name == "compiler" else staged.get(name)
+        row = row or {}
+        if not HEX_64.match(str(row.get("sha256", ""))):
+            problems.append(f"{name}.sha256 is not a SHA-256")
+    if not LINK_BANNER_RE.search(str((staged.get("linker") or {}).get("version", ""))):
+        problems.append("linker.version is not a link.exe banner")
+    if not LIB_BANNER_RE.search(str((staged.get("archiver") or {}).get("version", ""))):
+        problems.append("archiver.version is not a lib.exe banner")
+    problems += derived_field_problems(archive, staged, source, source_bytes, arch, configuration,
+                                       variant)
+    observed = staged.get("observed") or {}
+    machines = observed.get("coff_machines") or {}
+    actual_machines, actual_undecodable = observed_member_machines(archive)
+    if machines != actual_machines:
+        problems.append("observed.coff_machines does not match the archive")
+    if "undecodable_members" not in observed:
+        problems.append("observed.undecodable_members was not measured")
+    elif observed.get("undecodable_members") != actual_undecodable:
+        problems.append("observed.undecodable_members does not match the archive")
+    if actual_undecodable:
+        problems.append(f"archive has {actual_undecodable} undecodable object member(s)")
+    if not machines:
+        problems.append("the archive holds no COFF object member")
+    elif expected_machine and set(machines) - {expected_machine}:
+        problems.append(f"objects for {sorted(machines)} in a {arch} cell")
+    return problems
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--archive", type=Path, required=True)
+    parser.add_argument("--arch", required=True)
+    parser.add_argument("--configuration", required=True)
+    parser.add_argument("--variant", required=True)
+    parser.add_argument("--out-dir", type=Path, help="write the content-addressed receipt here")
+    parser.add_argument("--check", type=Path, metavar="STAGED",
+                        help="re-prove a staged receipt against --archive instead of writing one")
+    args = parser.parse_args(argv)
+
+    source_bytes = archive_receipt(args.archive)
+    if args.check:
+        data = args.check.read_bytes()
+        staged = json.loads(data.decode("utf-8"))
+        problems = problems_for(args.archive, staged, source_bytes, args.arch, args.configuration,
+                                args.variant)
+        match = CONTENT_ADDRESSED_RE.search(args.check.name)
+        if not match or match.group(1) != hashlib.sha256(data).hexdigest():
+            problems.append(f"{args.check.name} does not carry its own sha256")
+        elif args.check.name != content_addressed_name(args.archive.name, data):
+            problems.append(f"{args.check.name} is not the exact content-addressed name for {args.archive.name}")
+    else:
+        try:
+            source = json.loads(source_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            print(f"msvc-toolchain-receipt: receipt inside the archive is not JSON: {error}",
+                  file=sys.stderr)
+            return 1
+        staged = derive(args.archive, source, source_bytes, args.arch, args.configuration,
+                        args.variant)
+        problems = problems_for(args.archive, staged, source_bytes, args.arch, args.configuration,
+                                args.variant)
+    for problem in problems:
+        print(f"msvc-toolchain-receipt: {problem}", file=sys.stderr)
+    if problems:
+        return 1
+    if args.check:
+        print(f"msvc-toolchain-receipt: {args.check} is proven")
+        return 0
+    if not args.out_dir:
+        parser.error("--out-dir is required to stage a receipt")
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    data = canonical_bytes(staged)
+    target = args.out_dir / content_addressed_name(args.archive.name, data)
+    target.write_bytes(data)
+    print(f"msvc-toolchain-receipt: staged {target}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

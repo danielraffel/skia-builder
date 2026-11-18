@@ -58,6 +58,7 @@ def receipt(arch: str, config: str = "Release") -> dict:
             "windows_sdk_version": "10.0.26100.0",
             "visual_studio_vc_dir": r"C:\VS\VC",
             "host_architecture": "ARM64",
+            "skia_builder_ref": "e22740ed2852ebb3d5a801d6ac48b39788ed18bb",
         },
         "runtime": {"abi": "msvc", "library": "static", "compile_flag": "/MT",
                     "consumer_requirement": "MSVC STL/CRT toolset >= 14.51.36231"},

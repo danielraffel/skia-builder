@@ -174,8 +174,14 @@ jobs:
             --original-job "$ORIGINAL_JOB" --original-image-version "$ORIGINAL_IMAGE" \
             --original-xcode "$ORIGINAL_XCODE" --original-compiler-identification "$ORIGINAL_COMPILER" \
             --out-dir rebound
+          # The rebuild ran with release_tag, so its lock is the published
+          # release's skia-release-lock.json; the manifest must name those commits.
+          lock=rebuild/skia-release-lock/skia-release-lock.json
+          skia="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["built_skia"])' "$lock")"
+          dawn="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["built_dawn"])' "$lock")"
           python3 tools/write_legal_manifest.py rebound/*.legal-manifest.sha256-*.json \
-            --archive "published/$ASSET" --check
+            --archive "published/$ASSET" --check \
+            --expect-skia-revision "$skia" --expect-dawn-revision "$dawn"
           python3 tools/write_apple_toolchain_receipt.py rebound/*.apple-toolchain.sha256-*.json \
             --archive "published/$ASSET" --check
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

@@ -56,6 +56,7 @@ from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apple_archive  # noqa: E402
+import archive_cell  # noqa: E402
 
 SCHEMA = "skia-builder.legal-manifest.v1"
 LICENSE_RESOLUTION = "nearest-ancestor-license-file"
@@ -65,6 +66,9 @@ HEX_64 = re.compile(r"^[0-9a-f]{64}$")
 CONTENT_ADDRESSED_RE = re.compile(r"\.legal-manifest\.sha256-([0-9a-f]{64})\.json$")
 OBJECT_SUFFIXES = (".o", ".obj")
 SKIP_DIRS = {".git", ".cipd", "__pycache__"}
+# Files this repository's build writes into the package; they are governed by
+# the builder's own license, not by any source file.
+BUILDER_METADATA = {"gn_args.txt", "msvc-toolchain.json"}
 
 Runner = Callable[[list[str], Path], str]
 
@@ -442,6 +446,8 @@ class BuildGraph:
 # ------------------------------------------------------------- manifest ----
 
 DEPS_CHECKOUTS = {"skia": ".", "dawn": "third_party/externals/dawn"}
+ZIP_MEMBER_KINDS = {"static-archive", "builder-metadata", "packaged-file"}
+COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 def source_revisions(graph: BuildGraph, expected: dict[str, str]) -> dict[str, object]:
@@ -481,7 +487,7 @@ def build_manifest(archive: Path, graph: BuildGraph, cell: dict[str, object],
                     apple_archive.AR_MAGIC):
                 row["kind"] = "static-archive"
                 static_archives[info.filename] = describe_static_archive(info.filename, data, graph)
-            elif PurePosixPath(info.filename).name == "gn_args.txt":
+            elif PurePosixPath(info.filename).name in BUILDER_METADATA:
                 row["kind"] = "builder-metadata"
                 row["licenses"] = graph.builder_license()
             else:
@@ -598,6 +604,26 @@ def validate_manifest(manifest: dict, archive: Path | None = None) -> list[str]:
         for license_id in row.get("licenses", []):
             if license_id not in licenses:
                 problems.append(f"file {file_id} names unknown license {license_id}")
+    for row in manifest.get("zip_members") or []:
+        kind, where = row.get("kind"), row.get("name")
+        if kind not in ZIP_MEMBER_KINDS:
+            problems.append(f"zip member {where} has unknown kind {kind!r}")
+        elif kind != "static-archive":
+            if not row.get("licenses"):
+                problems.append(f"zip member {where} has no license")
+            for license_id in row.get("licenses") or []:
+                if license_id not in licenses:
+                    problems.append(f"zip member {where} names unknown license {license_id}")
+            if kind == "packaged-file" and row.get("origin") not in files:
+                problems.append(f"zip member {where} has no known origin ({row.get('origin')!r})")
+    revisions = manifest.get("source_revisions") or {}
+    for name in sorted(DEPS_CHECKOUTS):
+        row = revisions.get(name) or {}
+        commit = row.get("commit")
+        if not re.fullmatch(r"[0-9a-f]{40}", str(commit or "")):
+            problems.append(f"source_revisions.{name}.commit {commit!r} is not a commit")
+        elif row.get("expected") != commit:
+            problems.append(f"source_revisions.{name}: built {commit}, lock pinned {row.get('expected')!r}")
     for name, row in (manifest.get("static_archives") or {}).items():
         for arch, piece in row.get("slices", {}).items():
             for member in piece.get("members", []):
@@ -607,6 +633,8 @@ def validate_manifest(manifest: dict, archive: Path | None = None) -> list[str]:
         actual = sha256_file(archive)
         if manifest.get("archive", {}).get("sha256") != actual:
             problems.append(f"archive sha256 {actual} != manifest {manifest.get('archive', {}).get('sha256')}")
+        if manifest.get("archive", {}).get("name") != archive.name:
+            problems.append(f"archive name {manifest.get('archive', {}).get('name')!r} != {archive.name!r}")
         listed = {row["name"]: row["sha256"] for row in manifest.get("zip_members", [])}
         with zipfile.ZipFile(archive) as handle:
             for info in handle.infolist():
@@ -635,7 +663,28 @@ def validate_manifest(manifest: dict, archive: Path | None = None) -> list[str]:
 
 # ------------------------------------------------------------------ main ----
 
-def default_toolchain_roots() -> list[Path]:
+def default_toolchain_roots(platform_name: str = "") -> list[Path]:
+    """Directories whose headers are toolchain inputs, not sources this build redistributes.
+
+    Linux and Windows cells list the system and compiler prefixes the runner
+    images use; ``LLVM_PATH`` and ``RUNNER_TOOL_CACHE`` add the LLVM the
+    workflow installs.  A header outside every root is a gap, never silently
+    treated as a toolchain input.
+    """
+    if platform_name == "linux":
+        roots = [Path("/usr"), Path("/opt"), Path("/lib"), Path("/etc")]
+        for variable in ("LLVM_PATH", "RUNNER_TOOL_CACHE"):
+            if os.environ.get(variable):
+                roots.append(Path(os.environ[variable]))
+        return roots
+    if platform_name == "win":
+        roots = [Path(os.environ.get(variable, default)) for variable, default in (
+            ("ProgramFiles", r"C:\Program Files"),
+            ("ProgramFiles(x86)", r"C:\Program Files (x86)"))]
+        for variable in ("LLVM_PATH", "WindowsSdkDir", "VCINSTALLDIR"):
+            if os.environ.get(variable):
+                roots.append(Path(os.environ[variable]))
+        return roots
     roots = [Path("/Library/Developer/CommandLineTools"), Path("/usr")]
     developer = os.environ.get("DEVELOPER_DIR")
     if not developer:
@@ -673,28 +722,48 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--builder-root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--ninja", default="ninja")
     parser.add_argument("--toolchain-root", action="append", type=Path, default=[],
-                        help="directory whose headers are toolchain inputs (SDK, libc++); "
-                             "defaults to the active developer dir, the Command Line Tools and /usr")
+                        help="directory whose headers are toolchain inputs (SDK, libc++, MSVC); "
+                             "defaults to the --platform's usual prefixes (on Apple, the active "
+                             "developer dir, the Command Line Tools and /usr)")
     parser.add_argument("--gn", help="GN binary; defaults to <source-root>/bin/gn")
-    parser.add_argument("--expect-skia-revision", default="",
-                        help="Skia commit the release lock pinned; a different checkout is a gap")
-    parser.add_argument("--expect-dawn-revision", default="",
-                        help="Dawn commit the release lock pinned; a different checkout is a gap")
+    parser.add_argument("--expect-skia-revision", required=True,
+                        help="Skia commit the release lock pinned; a different checkout is a gap "
+                             "(when writing) or a failure (with --check)")
+    parser.add_argument("--expect-dawn-revision", required=True,
+                        help="Dawn commit the release lock pinned; a different checkout is a gap "
+                             "(when writing) or a failure (with --check)")
     parser.add_argument("--platform", default="")
     parser.add_argument("--variant", default="")
     parser.add_argument("--configuration", default="")
+    parser.add_argument("--target", default="", help="device or simulator (iOS/visionOS)")
     parser.add_argument("--content-addressed-dir", type=Path,
                         help="also write <archive>.legal-manifest.sha256-<digest>.json here")
     parser.add_argument("--check", action="store_true",
                         help="validate an existing manifest against --archive instead of writing one")
     args = parser.parse_args(argv)
+    for flag, value in (("--expect-skia-revision", args.expect_skia_revision),
+                        ("--expect-dawn-revision", args.expect_dawn_revision)):
+        if not COMMIT_RE.fullmatch(value):
+            parser.error(f"{flag} must be the 40-character commit the release lock pinned")
 
     if args.check:
-        manifest = json.loads(args.output.read_text(encoding="utf-8"))
+        data = args.output.read_bytes()
+        manifest = json.loads(data.decode("utf-8"))
         match = CONTENT_ADDRESSED_RE.search(args.output.name)
         problems = validate_manifest(manifest, args.archive)
-        if match and match.group(1) != sha256_file(args.output):
+        # The revisions are the ones the caller's release lock pinned, not the manifest's own claim.
+        for name, want in (("skia", args.expect_skia_revision), ("dawn", args.expect_dawn_revision)):
+            got = ((manifest.get("source_revisions") or {}).get(name) or {}).get("commit")
+            if got != want:
+                problems.append(f"source_revisions.{name}.commit {got!r} != the pinned {want!r}")
+        # The cell is the one the archive's name promises, not the manifest's own claim.
+        problems += archive_cell.cell_problems(args.archive.name, manifest.get("cell"), label="cell")
+        if not match:
+            problems.append(f"{args.output.name} is not a content-addressed legal manifest name")
+        elif match.group(1) != hashlib.sha256(data).hexdigest():
             problems.append(f"{args.output.name} does not carry its own sha256")
+        elif args.output.name != content_addressed_name(args.archive.name, data):
+            problems.append(f"{args.output.name} is not the exact content-addressed name for {args.archive.name}")
         for problem in problems:
             print(f"legal-manifest: {problem}", file=sys.stderr)
         if problems:
@@ -707,11 +776,14 @@ def main(argv: list[str] | None = None) -> int:
     out_dirs = parse_out_dirs(args.out_dir)
     gn = args.gn or str(args.source_root / "bin" / "gn")
     if not Path(gn).exists():
+        gn = str(args.source_root / "bin" / "gn.exe")
+    if not Path(gn).exists():
         gn = None
     graph = BuildGraph(args.source_root, out_dirs, args.ninja, builder_root=args.builder_root,
-                       toolchain_roots=args.toolchain_root or default_toolchain_roots())
+                       toolchain_roots=args.toolchain_root or default_toolchain_roots(args.platform))
     cell = {"platform": args.platform, "variant": args.variant,
-            "configuration": args.configuration, "architectures": sorted(out_dirs)}
+            "configuration": args.configuration, "architectures": sorted(out_dirs),
+            **({"target": args.target} if args.target else {})}
     expected = {name: value for name, value in (("skia", args.expect_skia_revision),
                                                 ("dawn", args.expect_dawn_revision)) if value}
     manifest = build_manifest(args.archive, graph, cell, gn, expected)

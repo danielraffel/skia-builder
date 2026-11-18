@@ -41,6 +41,7 @@ CL_PATH_RE = re.compile(
 CL_ANY_MSVC_RE = re.compile(
     r"([A-Za-z](?:\$:|:)[^\"\r\n]*?[\\/]MSVC[\\/]"
     r"([0-9]{2}\.[0-9]{2}\.[0-9]{5})[^\"\r\n]*?[\\/]cl\.exe)", re.IGNORECASE)
+GIT_REF_RE = re.compile(r"^[0-9a-f]{40}$")
 BAD_VALUE_RE = re.compile(r"unknown|error|no input files|not recognized|not found|cannot find",
                           re.IGNORECASE)
 GN_TARGET_CPU = {"arm64": "arm64", "arm64ec": "arm64", "x64": "x64", "x86_64": "x64", "win32": "x86", "x86": "x86"}
@@ -142,7 +143,8 @@ def find_msvc_cl(vc_dir: Path | None, toolset: str | None, arch: str) -> Path | 
 
 def build_receipt(arch: str, configuration: str, variant: str, *,
                   vc_dir: Path | None = None, win_sdk: Path | None = None,
-                  toolchain_ninja: Path | None = None, run: Runner = _run) -> dict:
+                  toolchain_ninja: Path | None = None, builder_ref: str | None = None,
+                  run: Runner = _run) -> dict:
     target_cpu = GN_TARGET_CPU.get(arch.lower(), arch.lower())
     vc_dir = vc_dir or find_msvc(run=run)
     toolset = os.environ.get("VCToolsVersion", "").strip("\\/ ") or (
@@ -160,6 +162,10 @@ def build_receipt(arch: str, configuration: str, variant: str, *,
         cl, toolset = built
     cl_version = (_first_matching_line(run([cl]), CL_BANNER_RE)
                   if cl != "unknown" else "unknown")
+    builder_ref = (builder_ref or os.environ.get("SKIA_BUILDER_REF", "")).strip().lower()
+    # Required: the receipt binds the archive to the builder commit that made it.
+    if not GIT_REF_RE.fullmatch(builder_ref):
+        raise ValueError("builder_ref (or SKIA_BUILDER_REF) must be a 40-character lowercase git commit")
     return {
         "schema_version": 1,
         "target": {"platform": "windows", "architecture": arch, "configuration": configuration,
@@ -183,6 +189,7 @@ def build_receipt(arch: str, configuration: str, variant: str, *,
             "windows_sdk_version": sdk or "unknown",
             "visual_studio_vc_dir": str(vc_dir) if vc_dir else "unknown",
             "host_architecture": platform.machine(),
+            "skia_builder_ref": builder_ref,
         },
         "runtime": {
             "abi": "msvc",
@@ -199,9 +206,13 @@ def build_receipt(arch: str, configuration: str, variant: str, *,
     }
 
 
-def validate_receipt(receipt: dict, expect_arch: str | None = None,
-                     expect_config: str | None = None) -> list[str]:
-    """Return every reason this receipt does not prove what it claims."""
+def validate_receipt(receipt: dict, expect_arch: str, expect_config: str,
+                     expect_variant: str) -> list[str]:
+    """Return every reason this receipt does not prove the named Windows cell.
+
+    The expected cell is required: a receipt only proves the cell the caller
+    built, never whatever target it claims.
+    """
     problems = []
     producer = receipt.get("producer") or {}
     target = receipt.get("target") or {}
@@ -233,6 +244,9 @@ def validate_receipt(receipt: dict, expect_arch: str | None = None,
     toolset = str(producer.get("msvc_toolset_version", ""))
     if toolset and toolset not in str(cl.get("path", "")):
         problems.append(f"skia_gn_compiler.path {cl.get('path')!r} is not from toolset {toolset}")
+    if not GIT_REF_RE.fullmatch(str(producer.get("skia_builder_ref", ""))):
+        problems.append(f"skia_builder_ref {producer.get('skia_builder_ref')!r} "
+                        "is not a 40-character builder commit")
     dawn = producer.get("dawn_cmake_compiler") or {}
     if not CL_BANNER_RE.search(str(dawn.get("version", ""))):
         problems.append(f"dawn_cmake_compiler.version {dawn.get('version')!r} "
@@ -240,10 +254,16 @@ def validate_receipt(receipt: dict, expect_arch: str | None = None,
     if toolset and toolset not in str(dawn.get("path", "")):
         problems.append(f"dawn_cmake_compiler.path {dawn.get('path')!r} "
                         f"is not from toolset {toolset}")
-    if expect_arch and str(target.get("architecture", "")).lower() != expect_arch.lower():
+    if target.get("platform") != "windows":
+        problems.append(f"target.platform {target.get('platform')!r} != 'windows'")
+    if str(expect_arch or "").lower() not in GN_TARGET_CPU:
+        problems.append(f"expected architecture {expect_arch!r} is not a Windows architecture")
+    elif str(target.get("architecture", "")).lower() != expect_arch.lower():
         problems.append(f"target.architecture {target.get('architecture')!r} != {expect_arch!r}")
-    if expect_config and str(target.get("configuration", "")).lower() != expect_config.lower():
+    if not expect_config or str(target.get("configuration", "")).lower() != expect_config.lower():
         problems.append(f"target.configuration {target.get('configuration')!r} != {expect_config!r}")
+    if not expect_variant or target.get("variant") != expect_variant:
+        problems.append(f"target.variant {target.get('variant')!r} != {expect_variant!r}")
     return problems
 
 
@@ -252,18 +272,24 @@ def main(argv: list[str] | None = None) -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("output", type=Path)
     parser.add_argument("--arch", required=True)
-    parser.add_argument("--configuration", default="Release")
-    parser.add_argument("--variant", default="gpu")
+    parser.add_argument("--configuration", required=True)
+    parser.add_argument("--variant", required=True)
     parser.add_argument("--toolchain-ninja", type=Path,
                         help="GN's toolchain.ninja; the cl.exe it names is authoritative")
+    parser.add_argument("--builder-ref", default=os.environ.get("SKIA_BUILDER_REF", ""),
+                        help="40-character skia-builder commit that produced this archive "
+                             "(required when writing; defaults to $SKIA_BUILDER_REF)")
     parser.add_argument("--check", action="store_true",
                         help="validate an existing receipt instead of writing one")
     args = parser.parse_args(argv)
     if args.check:
         receipt = json.loads(args.output.read_text(encoding="utf-8"))
     else:
+        if not GIT_REF_RE.fullmatch(args.builder_ref.strip().lower()):
+            parser.error("--builder-ref (or SKIA_BUILDER_REF) must be the 40-character builder commit")
         receipt = build_receipt(args.arch, args.configuration, args.variant,
-                                toolchain_ninja=args.toolchain_ninja)
+                                toolchain_ninja=args.toolchain_ninja,
+                                builder_ref=args.builder_ref)
         if args.toolchain_ninja and receipt["producer"]["skia_gn_compiler"]["source"] \
                 != "toolchain.ninja":
             print(f"error: no cl.exe path found in {args.toolchain_ninja}", file=sys.stderr)
@@ -271,7 +297,7 @@ def main(argv: list[str] | None = None) -> int:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(receipt, indent=2))
-    problems = validate_receipt(receipt, args.arch, args.configuration)
+    problems = validate_receipt(receipt, args.arch, args.configuration, args.variant)
     if problems:
         print(f"error: {args.output} is not a valid toolchain receipt:", file=sys.stderr)
         for problem in problems:

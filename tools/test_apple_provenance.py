@@ -27,6 +27,7 @@ def load(name):
 
 
 apple_archive = load("apple_archive")
+archive_cell = load("archive_cell")
 manifest_tool = load("write_legal_manifest")
 receipt_tool = load("write_apple_toolchain_receipt")
 compare_tool = load("compare_archive_members")
@@ -211,11 +212,17 @@ class LegalManifestTests(unittest.TestCase):
         return archive
 
     def manifest(self, archive, expected=None):
+        expected = dict(self.commits) if expected is None else expected
         graph = manifest_tool.BuildGraph(self.src, {"arm64": self.out}, "ninja",
                                          builder_root=self.builder,
                                          toolchain_roots=manifest_tool.default_toolchain_roots())
-        return manifest_tool.build_manifest(archive, graph, {"platform": "mac"}, gn=None,
+        cell = {"platform": "mac", "architectures": ["arm64"], "variant": "gpu", "configuration": "Release"}
+        return manifest_tool.build_manifest(archive, graph, cell, gn=None,
                                             expected_revisions=expected)
+
+    def revision_args(self):
+        return ["--expect-skia-revision", self.commits["skia"],
+                "--expect-dawn-revision", self.commits["dawn"]]
 
     def test_object_name_fallback_maps_arm64e_to_architecture_variant_output(self):
         graph = manifest_tool.BuildGraph(self.src, {"arm64": self.out}, "ninja",
@@ -283,6 +290,41 @@ class LegalManifestTests(unittest.TestCase):
         manifest = self.manifest(self.package(extra=[("build/include/stray.h", b"not from the tree\n")]))
         self.assertIn({"kind": "packaged-file-unmatched", "path": "build/include/stray.h"}, manifest["gaps"])
 
+    def test_check_requires_the_pinned_revisions(self):
+        archive = self.package()
+        manifest = self.manifest(archive)
+        data = manifest_tool.canonical_bytes(manifest)
+        asset = self.tmp / manifest_tool.content_addressed_name(archive.name, data)
+        asset.write_bytes(data)
+        check = [str(asset), "--archive", str(archive), "--check"]
+        self.assertEqual(manifest_tool.main([*check, *self.revision_args()]), 0)
+        with self.assertRaises(SystemExit):
+            manifest_tool.main(check)
+        other = ["--expect-skia-revision", "0" * 40, "--expect-dawn-revision", self.commits["dawn"]]
+        self.assertEqual(manifest_tool.main([*check, *other]), 1)
+        # A manifest that recorded no pinned revision proves nothing about its source.
+        unpinned = self.manifest(archive, expected={})
+        self.assertTrue(any("lock pinned None" in p for p in manifest_tool.validate_manifest(unpinned, archive)))
+        # Writing also requires the pinned revisions.
+        with self.assertRaises(SystemExit):
+            manifest_tool.main([str(self.tmp / "m.json"), "--archive", str(archive), "--source-root",
+                                str(self.src), "--out-dir", f"arm64={self.out}"])
+
+    def test_every_zip_member_must_resolve_and_the_archive_name_must_match(self):
+        archive = self.package()
+        tampers = {
+            "packaged-file without license": lambda m: next(
+                r for r in m["zip_members"] if r["kind"] == "packaged-file").update(origin=None, licenses=[]),
+            "unknown kind": lambda m: m["zip_members"][0].__setitem__("kind", "other"),
+            "archive name": lambda m: m["archive"].__setitem__("name", "something-else.zip"),
+        }
+        for label, tamper in tampers.items():
+            manifest = self.manifest(archive)
+            self.assertEqual(manifest_tool.validate_manifest(manifest, archive), [])
+            tamper(manifest)
+            with self.subTest(tamper=label):
+                self.assertTrue(manifest_tool.validate_manifest(manifest, archive))
+
     def test_check_rejects_a_manifest_for_different_bytes(self):
         archive = self.package()
         manifest = self.manifest(archive)
@@ -296,16 +338,33 @@ class LegalManifestTests(unittest.TestCase):
         published = self.tmp / "assets"
         args = [str(out), "--archive", str(archive), "--source-root", str(self.src),
                 "--out-dir", f"arm64={self.out}", "--builder-root", str(self.builder),
-                "--content-addressed-dir", str(published)]
+                "--platform", "mac", "--variant", "gpu", "--configuration", "Release",
+                *self.revision_args(), "--content-addressed-dir", str(published)]
         self.assertEqual(manifest_tool.main(args), 0)
         [asset] = list(published.iterdir())
         self.assertRegex(asset.name, manifest_tool.CONTENT_ADDRESSED_RE)
         self.assertEqual(asset.read_bytes(), out.read_bytes())
-        self.assertEqual(manifest_tool.main([str(asset), "--archive", str(archive), "--check"]), 0)
+        self.assertEqual(manifest_tool.main([str(asset), "--archive", str(archive), "--check",
+                                             *self.revision_args()]), 0)
+        # The cell is the one the archive's name promises: a manifest rewritten
+        # to claim another cell, or not content-addressed at all, is refused.
+        for key, value in (("platform", "ios"), ("architectures", ["x86_64"]),
+                           ("configuration", "Debug"), ("variant", "cpu"), ("target", "simulator")):
+            manifest = json.loads(asset.read_bytes())
+            manifest["cell"][key] = value
+            data = manifest_tool.canonical_bytes(manifest)
+            rewritten = self.tmp / manifest_tool.content_addressed_name(archive.name, data)
+            rewritten.write_bytes(data)
+            with self.subTest(key=key):
+                self.assertEqual(manifest_tool.main([str(rewritten), "--archive", str(archive), "--check",
+                                             *self.revision_args()]), 1)
+        self.assertEqual(manifest_tool.main([str(out), "--archive", str(archive), "--check",
+                                             *self.revision_args()]), 1)
         # A content-addressed name that no longer matches its bytes is refused.
         renamed = published / asset.name.replace(asset.name[-69:-5], "f" * 64)
         asset.rename(renamed)
-        self.assertEqual(manifest_tool.main([str(renamed), "--archive", str(archive), "--check"]), 1)
+        self.assertEqual(manifest_tool.main([str(renamed), "--archive", str(archive), "--check",
+                                             *self.revision_args()]), 1)
 
         shutil.rmtree(published)
         (self.src / "LICENSE").unlink()
@@ -420,6 +479,100 @@ class ToolchainReceiptTests(unittest.TestCase):
         self.assertTrue(receipt_tool.validate_receipt(receipt, other))
 
 
+    def staged(self, receipt):
+        data = receipt_tool.canonical_bytes(receipt)
+        path = self.tmp / receipt_tool.content_addressed_name(self.archive.name, data)
+        path.write_bytes(data)
+        return path
+
+    def test_check_proves_the_receipt_for_the_cell_its_archive_names(self):
+        self.assertEqual(receipt_tool.main([str(self.staged(self.receipt())), "--archive",
+                                            str(self.archive), "--check"]), 0)
+
+    def test_check_refuses_a_receipt_rewritten_to_claim_another_cell(self):
+        for key, value in (("platform", "ios"), ("architectures", ["arm64"]),
+                           ("configuration", "Debug"), ("variant", "cpu"),
+                           ("sdk_name", "iphonesimulator")):
+            receipt = self.receipt()
+            receipt["target"][key] = value
+            self.assertEqual(receipt_tool.validate_receipt(receipt, self.archive), [])
+            with self.subTest(key=key):
+                self.assertTrue(any(f"target.{key}" in p for p in receipt_tool.target_problems(
+                    receipt["target"], self.archive.name)), key)
+                self.assertEqual(receipt_tool.main([str(self.staged(receipt)), "--archive",
+                                                    str(self.archive), "--check"]), 1)
+
+    def test_a_receipt_without_object_measurements_is_refused(self):
+        receipt = self.receipt()
+        del receipt["observed_macho"]
+        problems = receipt_tool.validate_receipt(receipt, self.archive)
+        self.assertIn("observed_macho is required", problems)
+        self.assertEqual(receipt_tool.main([str(self.staged(receipt)), "--archive", str(self.archive),
+                                            "--check"]), 1)
+
+    def test_check_requires_a_content_addressed_name_and_an_archive(self):
+        plain = self.tmp / "apple-toolchain.json"
+        plain.write_bytes(receipt_tool.canonical_bytes(self.receipt()))
+        self.assertEqual(receipt_tool.main([str(plain), "--archive", str(self.archive), "--check"]), 1)
+        with self.assertRaises(SystemExit):
+            receipt_tool.main([str(self.staged(self.receipt())), "--check"])
+
+
+class ArchiveCellTests(unittest.TestCase):
+    def test_names_map_to_the_cells_the_workflow_builds(self):
+        self.assertEqual(archive_cell.cell_for_archive("skia-build-mac-universal-gpu-release.zip"),
+                         {"platform": "mac", "target": "", "architectures": ["arm64", "x86_64"],
+                          "variant": "gpu", "configuration": "Release"})
+        self.assertEqual(archive_cell.cell_for_archive(
+            "skia-build-ios-simulator-arm64-x86_64-gpu-release.zip")["architectures"],
+            ["arm64", "x86_64"])
+        self.assertEqual(archive_cell.cell_for_archive("skia-build-win-x64-gpu-debug.zip")["configuration"],
+                         "Debug")
+        self.assertEqual(archive_cell.cell_for_archive("skia-build-linux-arm64-gpu-release.zip")["platform"],
+                         "linux")
+
+    def test_every_derived_field_is_compared(self):
+        name = "skia-build-ios-simulator-arm64-x86_64-gpu-release.zip"
+        expected = archive_cell.cell_for_archive(name)
+        self.assertEqual(archive_cell.cell_problems(name, dict(expected), label="cell"), [])
+        other = {"platform": "visionos", "target": "device", "architectures": ["arm64"],
+                 "variant": "cpu", "configuration": "Debug"}
+        self.assertEqual(set(other), set(expected))
+        for key in expected:
+            claimed = dict(expected, **{key: other[key]})
+            with self.subTest(key=key):
+                self.assertTrue(any(p.startswith(f"cell.{key} ") for p in
+                                    archive_cell.cell_problems(name, claimed, label="cell")))
+
+    def test_device_and_simulator_records_cannot_be_swapped(self):
+        for platform, archs in (("ios", "arm64"), ("visionos", "arm64")):
+            device = f"skia-build-{platform}-device-{archs}-gpu-release.zip"
+            simulator = f"skia-build-{platform}-simulator-{archs}-gpu-release.zip"
+            for name, claimed_from in ((device, simulator), (simulator, device)):
+                claimed = archive_cell.cell_for_archive(claimed_from)
+                with self.subTest(name=name):
+                    self.assertTrue(any(p.startswith("cell.target ") for p in
+                                        archive_cell.cell_problems(name, claimed, label="cell")))
+                    # The Apple receipt check goes through the same comparison.
+                    sdk = (receipt_tool.SIMULATOR_SDK_NAMES if "simulator" in name
+                           else receipt_tool.SDK_NAMES)[platform]
+                    receipt_target = dict(claimed, sdk_name=sdk)
+                    self.assertTrue(any(p.startswith("target.target ") for p in
+                                        receipt_tool.target_problems(receipt_target, name)))
+        # A mac record claiming a device/simulator target is refused too.
+        self.assertTrue(archive_cell.cell_problems(
+            "skia-build-mac-arm64-gpu-release.zip",
+            {"platform": "mac", "target": "simulator", "architectures": ["arm64"],
+             "variant": "gpu", "configuration": "Release"}, label="cell"))
+
+    def test_an_unknown_name_fails_closed(self):
+        for name in ("other.zip", "skia-build-linux-riscv64-gpu-release.zip",
+                     "skia-build-ios-arm64-gpu-release.zip", "skia-build-mac-device-arm64-gpu-release.zip"):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                archive_cell.cell_for_archive(name)
+            self.assertTrue(archive_cell.cell_problems(name, {}, label="cell"))
+
+
 # ---------------------------------------------------------- comparison ----
 
 class CompareArchiveTests(unittest.TestCase):
@@ -506,6 +659,9 @@ class CompareArchiveTests(unittest.TestCase):
 
 # ------------------------------------------------------------- rebind ----
 
+REVISIONS = {"skia": "1" * 40, "dawn": "2" * 40}
+
+
 def minimal_manifest(archive: pathlib.Path) -> dict:
     """An exhaustive manifest for a fixture archive, in the writer's shape."""
     license_text = "BSD\n"
@@ -533,6 +689,8 @@ def minimal_manifest(archive: pathlib.Path) -> dict:
     return {"schema": manifest_tool.SCHEMA, "license_resolution": manifest_tool.LICENSE_RESOLUTION,
             "archive": {"name": archive.name, "sha256": compare_tool.sha256_file(archive)},
             "zip_members": zip_rows, "static_archives": static,
+            "source_revisions": {name: {"checkout": rel, "commit": REVISIONS[name], "expected": REVISIONS[name]}
+                                 for name, rel in manifest_tool.DEPS_CHECKOUTS.items()},
             "files": {"source:a.h": {"sha256": "0" * 64, "licenses": ["source:LICENSE"]}},
             "licenses": licenses, "gaps": [], "exhaustive": True}
 

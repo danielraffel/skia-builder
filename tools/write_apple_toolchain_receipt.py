@@ -51,6 +51,7 @@ from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apple_archive  # noqa: E402
+import archive_cell  # noqa: E402
 
 SCHEMA = "skia-builder.apple-toolchain-receipt.v1"
 HEX_64 = re.compile(r"^[0-9a-f]{64}$")
@@ -227,7 +228,8 @@ def build_receipt(platform_name: str, archs: list[str], configuration: str, vari
     receipt: dict[str, object] = {
         "schema": SCHEMA,
         "target": {"platform": platform_name, "architectures": archs, "configuration": configuration,
-                   "variant": variant, "minimum_os": min_os, "sdk_name": sdk},
+                   "variant": variant, "minimum_os": min_os, "sdk_name": sdk,
+                   **({"target": target} if target else {})},
         "runner": {
             "image_os": os.environ.get("ImageOS", "local"),
             "image_version": os.environ.get("ImageVersion", "local"),
@@ -327,7 +329,10 @@ def validate_receipt(receipt: dict, archive: Path | None = None) -> list[str]:
             problems.append(f"{path}: no cxx command recorded")
     sdk = receipt.get("sdk") or {}
     observed = receipt.get("observed_macho")
-    if observed is not None:
+    if not isinstance(observed, dict):
+        # The SDK and LC_BUILD_VERSION checks below rest on it; never skip them.
+        problems.append("observed_macho is required")
+    else:
         allowed_sdk_versions = [sdk.get("version"), *(sdk.get("compatible_versions") or [])]
         if any(version not in allowed_sdk_versions for version in observed.get("sdk_versions", [])) \
                 or sdk.get("version") not in observed.get("sdk_versions", []):
@@ -340,8 +345,27 @@ def validate_receipt(receipt: dict, archive: Path | None = None) -> list[str]:
         actual = sha256_file(archive)
         if (receipt.get("archive") or {}).get("sha256") != actual:
             problems.append(f"receipt archive sha256 != {actual}")
-        if observed is not None and observed != observed_macho(archive):
+        if observed != observed_macho(archive):
             problems.append("observed_macho does not match the archive")
+    return problems
+
+
+def target_problems(target: object, archive_name: str) -> list[str]:
+    """Every way the receipt's target differs from the cell ``archive_name`` promises.
+
+    The expectation comes from the archive being proved, never from the
+    receipt, so a receipt cannot be rewritten to claim another cell.
+    """
+    problems = archive_cell.cell_problems(archive_name, target, label="target")
+    try:
+        cell = archive_cell.cell_for_archive(archive_name)
+    except ValueError:
+        return problems
+    names = SIMULATOR_SDK_NAMES if cell["target"] == "simulator" else SDK_NAMES
+    sdk = names.get(str(cell["platform"]))
+    claimed = (target if isinstance(target, dict) else {}).get("sdk_name")
+    if claimed != sdk:
+        problems.append(f"target.sdk_name {claimed!r} != {sdk!r}")
     return problems
 
 
@@ -364,11 +388,19 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.check:
-        receipt = json.loads(args.output.read_text(encoding="utf-8"))
+        if not args.archive:
+            parser.error("--check requires --archive")
+        data = args.output.read_bytes()
+        receipt = json.loads(data.decode("utf-8"))
         problems = validate_receipt(receipt, args.archive)
+        problems += target_problems(receipt.get("target"), args.archive.name)
         match = CONTENT_ADDRESSED_RE.search(args.output.name)
-        if match and match.group(1) != sha256_file(args.output):
+        if not match:
+            problems.append(f"{args.output.name} is not a content-addressed Apple receipt name")
+        elif match.group(1) != hashlib.sha256(data).hexdigest():
             problems.append(f"{args.output.name} does not carry its own sha256")
+        elif args.output.name != content_addressed_name(args.archive.name, data):
+            problems.append(f"{args.output.name} is not the exact content-addressed name for {args.archive.name}")
         for problem in problems:
             print(f"apple-toolchain-receipt: {problem}", file=sys.stderr)
         if problems:

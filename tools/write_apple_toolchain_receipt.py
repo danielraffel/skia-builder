@@ -329,7 +329,10 @@ def validate_receipt(receipt: dict, archive: Path | None = None) -> list[str]:
             problems.append(f"{path}: no cxx command recorded")
     sdk = receipt.get("sdk") or {}
     observed = receipt.get("observed_macho")
-    if observed is not None:
+    if not isinstance(observed, dict):
+        # The SDK and LC_BUILD_VERSION checks below rest on it; never skip them.
+        problems.append("observed_macho is required")
+    else:
         allowed_sdk_versions = [sdk.get("version"), *(sdk.get("compatible_versions") or [])]
         if any(version not in allowed_sdk_versions for version in observed.get("sdk_versions", [])) \
                 or sdk.get("version") not in observed.get("sdk_versions", []):
@@ -342,7 +345,7 @@ def validate_receipt(receipt: dict, archive: Path | None = None) -> list[str]:
         actual = sha256_file(archive)
         if (receipt.get("archive") or {}).get("sha256") != actual:
             problems.append(f"receipt archive sha256 != {actual}")
-        if observed is not None and observed != observed_macho(archive):
+        if observed != observed_macho(archive):
             problems.append("observed_macho does not match the archive")
     return problems
 

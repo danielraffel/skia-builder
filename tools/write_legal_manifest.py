@@ -494,6 +494,8 @@ class BuildGraph:
 # ------------------------------------------------------------- manifest ----
 
 DEPS_CHECKOUTS = {"skia": ".", "dawn": "third_party/externals/dawn"}
+ZIP_MEMBER_KINDS = {"static-archive", "builder-metadata", "packaged-file"}
+COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 def source_revisions(graph: BuildGraph, expected: dict[str, str]) -> dict[str, object]:
@@ -650,6 +652,26 @@ def validate_manifest(manifest: dict, archive: Path | None = None) -> list[str]:
         for license_id in row.get("licenses", []):
             if license_id not in licenses:
                 problems.append(f"file {file_id} names unknown license {license_id}")
+    for row in manifest.get("zip_members") or []:
+        kind, where = row.get("kind"), row.get("name")
+        if kind not in ZIP_MEMBER_KINDS:
+            problems.append(f"zip member {where} has unknown kind {kind!r}")
+        elif kind != "static-archive":
+            if not row.get("licenses"):
+                problems.append(f"zip member {where} has no license")
+            for license_id in row.get("licenses") or []:
+                if license_id not in licenses:
+                    problems.append(f"zip member {where} names unknown license {license_id}")
+            if kind == "packaged-file" and row.get("origin") not in files:
+                problems.append(f"zip member {where} has no known origin ({row.get('origin')!r})")
+    revisions = manifest.get("source_revisions") or {}
+    for name in sorted(DEPS_CHECKOUTS):
+        row = revisions.get(name) or {}
+        commit = row.get("commit")
+        if not re.fullmatch(r"[0-9a-f]{40}", str(commit or "")):
+            problems.append(f"source_revisions.{name}.commit {commit!r} is not a commit")
+        elif row.get("expected") != commit:
+            problems.append(f"source_revisions.{name}: built {commit}, lock pinned {row.get('expected')!r}")
     for name, row in (manifest.get("static_archives") or {}).items():
         for arch, piece in row.get("slices", {}).items():
             for member in piece.get("members", []):
@@ -659,6 +681,8 @@ def validate_manifest(manifest: dict, archive: Path | None = None) -> list[str]:
         actual = sha256_file(archive)
         if manifest.get("archive", {}).get("sha256") != actual:
             problems.append(f"archive sha256 {actual} != manifest {manifest.get('archive', {}).get('sha256')}")
+        if manifest.get("archive", {}).get("name") != archive.name:
+            problems.append(f"archive name {manifest.get('archive', {}).get('name')!r} != {archive.name!r}")
         listed = {row["name"]: row["sha256"] for row in manifest.get("zip_members", [])}
         with zipfile.ZipFile(archive) as handle:
             for info in handle.infolist():
@@ -768,10 +792,12 @@ def main(argv: list[str] | None = None) -> int:
                              "defaults to the --platform's usual prefixes (on Apple, the active "
                              "developer dir, the Command Line Tools and /usr)")
     parser.add_argument("--gn", help="GN binary; defaults to <source-root>/bin/gn")
-    parser.add_argument("--expect-skia-revision", default="",
-                        help="Skia commit the release lock pinned; a different checkout is a gap")
-    parser.add_argument("--expect-dawn-revision", default="",
-                        help="Dawn commit the release lock pinned; a different checkout is a gap")
+    parser.add_argument("--expect-skia-revision", required=True,
+                        help="Skia commit the release lock pinned; a different checkout is a gap "
+                             "(when writing) or a failure (with --check)")
+    parser.add_argument("--expect-dawn-revision", required=True,
+                        help="Dawn commit the release lock pinned; a different checkout is a gap "
+                             "(when writing) or a failure (with --check)")
     parser.add_argument("--platform", default="")
     parser.add_argument("--variant", default="")
     parser.add_argument("--configuration", default="")
@@ -781,12 +807,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check", action="store_true",
                         help="validate an existing manifest against --archive instead of writing one")
     args = parser.parse_args(argv)
+    for flag, value in (("--expect-skia-revision", args.expect_skia_revision),
+                        ("--expect-dawn-revision", args.expect_dawn_revision)):
+        if not COMMIT_RE.fullmatch(value):
+            parser.error(f"{flag} must be the 40-character commit the release lock pinned")
 
     if args.check:
         data = args.output.read_bytes()
         manifest = json.loads(data.decode("utf-8"))
         match = CONTENT_ADDRESSED_RE.search(args.output.name)
         problems = validate_manifest(manifest, args.archive)
+        # The revisions are the ones the caller's release lock pinned, not the manifest's own claim.
+        for name, want in (("skia", args.expect_skia_revision), ("dawn", args.expect_dawn_revision)):
+            got = ((manifest.get("source_revisions") or {}).get(name) or {}).get("commit")
+            if got != want:
+                problems.append(f"source_revisions.{name}.commit {got!r} != the pinned {want!r}")
         # The cell is the one the archive's name promises, not the manifest's own claim.
         problems += archive_cell.cell_problems(args.archive.name, manifest.get("cell"), label="cell")
         if not match:

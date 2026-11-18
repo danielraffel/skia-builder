@@ -46,6 +46,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apple_archive  # noqa: E402
+import archive_cell  # noqa: E402
 import write_apple_toolchain_receipt as apple  # noqa: E402
 
 SCHEMA = "skia-builder.linux-toolchain-receipt.v1"
@@ -58,6 +59,8 @@ BAD_VALUE_RE = re.compile(r"^(unknown|error.*|)$", re.IGNORECASE)
 CONTENT_ADDRESSED_RE = re.compile(r"\.linux-toolchain\.sha256-([0-9a-f]{64})\.json$")
 WRAPPERS = {"ccache", "sccache", "distcc"}
 ARCH_NAMES = {"x64": "x64", "x86_64": "x64", "arm64": "arm64", "aarch64": "arm64"}
+# The first component of ``clang -dumpmachine`` for each cell architecture.
+TRIPLE_ARCH = {"x64": "x86_64", "arm64": "aarch64"}
 
 
 def content_addressed_name(archive_name: str, data: bytes) -> str:
@@ -276,7 +279,7 @@ def target_problems(target: object, arch: str, configuration: str, variant: str)
     return problems
 
 
-def validate_receipt(receipt: dict, archive: Path | None = None, *, arch: str,
+def validate_receipt(receipt: dict, archive: Path, *, arch: str,
                      configuration: str, variant: str) -> list[str]:
     """Every reason ``receipt`` does not prove the named Linux cell.
 
@@ -330,9 +333,16 @@ def validate_receipt(receipt: dict, archive: Path | None = None, *, arch: str,
     if not str((receipt.get("linker") or {}).get("path", "")).startswith("/"):
         problems.append("linker.path is not absolute")
     target_arch = ((receipt.get("target") or {}).get("architectures") or [""])[0]
-    abi = (receipt.get("cpp_abi") or {}).get(target_arch) or {}
+    abi_rows = receipt.get("cpp_abi") or {}
+    abi = abi_rows.get(target_arch) or {}
     if not re.fullmatch(r"\d+", str(abi.get("stdlib_version", ""))) or abi.get("stdlib") != "libstdc++":
         problems.append("cpp_abi has no libstdc++ release for the target architecture")
+    elif abi.get("glibcxx_release") != abi.get("stdlib_version") or set(abi_rows) != {target_arch}:
+        problems.append("cpp_abi is not exactly one libstdc++ release for the target architecture")
+    triple = str(compiler.get("target_triple", ""))
+    wanted_triple = TRIPLE_ARCH.get(ARCH_NAMES.get(str(target_arch).lower(), ""), "")
+    if not wanted_triple or triple.split("-")[0] != wanted_triple or "-linux-" not in triple:
+        problems.append(f"compiler.target_triple {triple!r} is not a {wanted_triple or '?'} Linux triple")
     if not re.fullmatch(r"\d+\.\d+", str((receipt.get("libc") or {}).get("version", ""))):
         problems.append("libc.version is not a glibc version")
     commands = compiler.get("gn_toolchain_commands") or {}
@@ -382,20 +392,32 @@ def validate_receipt(receipt: dict, archive: Path | None = None, *, arch: str,
     if re.fullmatch(r"\d+(\.\d+)+", needed) and re.fullmatch(r"\d+\.\d+", host) \
             and tuple(map(int, needed.split("."))) > tuple(map(int, host.split("."))):
         problems.append(f"objects need glibc {needed}, newer than the producer's {host}")
-    if archive is not None:
-        actual = apple.sha256_file(archive)
-        if (receipt.get("archive") or {}).get("sha256") != actual:
-            problems.append(f"receipt archive sha256 != {actual}")
-        if observed != observed_elf(archive):
-            problems.append("observed_elf does not match the archive")
+    actual = apple.sha256_file(archive)
+    if (receipt.get("archive") or {}).get("sha256") != actual:
+        problems.append(f"receipt archive sha256 != {actual}")
+    if (receipt.get("archive") or {}).get("name") != archive.name:
+        problems.append(f"receipt archive name {(receipt.get('archive') or {}).get('name')!r} != {archive.name!r}")
+    measured = observed_elf(archive)
+    if observed != measured:
+        problems.append("observed_elf does not match the archive")
+    if observed_symbols.get("elf_machines") != sorted(measured["machines"]):
+        problems.append(f"observed.elf_machines {observed_symbols.get('elf_machines')!r} "
+                        f"!= the archive's {sorted(measured['machines'])!r}")
     return problems
+
+
+def flag_problems(archive_name: str, *, arch: str, configuration: str, variant: str) -> list[str]:
+    """Reasons the caller's cell differs from the cell the archive's own name promises."""
+    claimed = {"platform": "linux", "target": "", "architectures": [ARCH_NAMES.get(arch.lower(), arch)],
+               "configuration": configuration, "variant": variant}
+    return archive_cell.cell_problems(archive_name, claimed, label="--check cell")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("output", type=Path)
-    parser.add_argument("--archive", type=Path)
+    parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--arch", required=True, help="the cell's architecture (x64 or arm64)")
     parser.add_argument("--configuration", required=True)
     parser.add_argument("--variant", required=True)
@@ -412,11 +434,10 @@ def main(argv: list[str] | None = None) -> int:
 
     expected = {"arch": args.arch, "configuration": args.configuration, "variant": args.variant}
     if args.check:
-        if not args.archive:
-            parser.error("--check requires --archive")
         data = args.output.read_bytes()
         receipt = json.loads(data.decode("utf-8"))
         problems = validate_receipt(receipt, args.archive, **expected)
+        problems += flag_problems(args.archive.name, **expected)
         match = CONTENT_ADDRESSED_RE.search(args.output.name)
         digest = hashlib.sha256(data).hexdigest()
         if not match:
@@ -439,12 +460,13 @@ def main(argv: list[str] | None = None) -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_bytes(data)
     problems = validate_receipt(receipt, args.archive, **expected)
+    problems += flag_problems(args.archive.name, **expected)
     for problem in problems:
         print(f"linux-toolchain-receipt: {problem}", file=sys.stderr)
     if args.content_addressed_dir and not problems:
         args.content_addressed_dir.mkdir(parents=True, exist_ok=True)
         target = args.content_addressed_dir / content_addressed_name(
-            args.archive.name if args.archive else "toolchain", data)
+            args.archive.name, data)
         target.write_bytes(data)
         print(f"linux-toolchain-receipt: content-addressed copy {target}")
     print(json.dumps({key: receipt[key] for key in ("compiler", "libc", "cpp_abi")}, indent=1)[:4000])

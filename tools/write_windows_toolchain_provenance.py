@@ -163,8 +163,9 @@ def build_receipt(arch: str, configuration: str, variant: str, *,
     cl_version = (_first_matching_line(run([cl]), CL_BANNER_RE)
                   if cl != "unknown" else "unknown")
     builder_ref = (builder_ref or os.environ.get("SKIA_BUILDER_REF", "")).strip().lower()
-    if builder_ref and not GIT_REF_RE.fullmatch(builder_ref):
-        raise ValueError("builder_ref must be a 40-character lowercase git commit")
+    # Required: the receipt binds the archive to the builder commit that made it.
+    if not GIT_REF_RE.fullmatch(builder_ref):
+        raise ValueError("builder_ref (or SKIA_BUILDER_REF) must be a 40-character lowercase git commit")
     return {
         "schema_version": 1,
         "target": {"platform": "windows", "architecture": arch, "configuration": configuration,
@@ -188,7 +189,7 @@ def build_receipt(arch: str, configuration: str, variant: str, *,
             "windows_sdk_version": sdk or "unknown",
             "visual_studio_vc_dir": str(vc_dir) if vc_dir else "unknown",
             "host_architecture": platform.machine(),
-            "skia_builder_ref": builder_ref or None,
+            "skia_builder_ref": builder_ref,
         },
         "runtime": {
             "abi": "msvc",
@@ -243,6 +244,9 @@ def validate_receipt(receipt: dict, expect_arch: str, expect_config: str,
     toolset = str(producer.get("msvc_toolset_version", ""))
     if toolset and toolset not in str(cl.get("path", "")):
         problems.append(f"skia_gn_compiler.path {cl.get('path')!r} is not from toolset {toolset}")
+    if not GIT_REF_RE.fullmatch(str(producer.get("skia_builder_ref", ""))):
+        problems.append(f"skia_builder_ref {producer.get('skia_builder_ref')!r} "
+                        "is not a 40-character builder commit")
     dawn = producer.get("dawn_cmake_compiler") or {}
     if not CL_BANNER_RE.search(str(dawn.get("version", ""))):
         problems.append(f"dawn_cmake_compiler.version {dawn.get('version')!r} "
@@ -272,14 +276,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--variant", required=True)
     parser.add_argument("--toolchain-ninja", type=Path,
                         help="GN's toolchain.ninja; the cl.exe it names is authoritative")
-    parser.add_argument("--builder-ref",
-                        help="40-character skia-builder commit that produced this archive")
+    parser.add_argument("--builder-ref", default=os.environ.get("SKIA_BUILDER_REF", ""),
+                        help="40-character skia-builder commit that produced this archive "
+                             "(required when writing; defaults to $SKIA_BUILDER_REF)")
     parser.add_argument("--check", action="store_true",
                         help="validate an existing receipt instead of writing one")
     args = parser.parse_args(argv)
     if args.check:
         receipt = json.loads(args.output.read_text(encoding="utf-8"))
     else:
+        if not GIT_REF_RE.fullmatch(args.builder_ref.strip().lower()):
+            parser.error("--builder-ref (or SKIA_BUILDER_REF) must be the 40-character builder commit")
         receipt = build_receipt(args.arch, args.configuration, args.variant,
                                 toolchain_ninja=args.toolchain_ninja,
                                 builder_ref=args.builder_ref)

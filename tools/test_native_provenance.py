@@ -30,6 +30,7 @@ stage_tool = load("stage_windows_receipt")
 
 CELL = {"arch": "x64", "configuration": "Release", "variant": "gpu"}
 CELL_ARGS = ["--arch", "x64", "--configuration", "Release", "--variant", "gpu"]
+FIXTURES = ROOT / "tools" / "testdata" / "elf"
 CLANG = "clang version 20.1.0 (https://github.com/llvm/llvm-project 24a30daaa559829ad079f2ff7f73eb4e18095f88)"
 
 
@@ -250,6 +251,26 @@ class LinuxReceiptTests(unittest.TestCase):
         self.assertEqual(receipt["observed_elf"]["members_without_comment"], 1)
         problems = linux_tool.validate_receipt(receipt, archive, **CELL)
         self.assertTrue(any("without .comment" in p for p in problems), problems)
+
+    def test_real_objects_are_judged_by_their_sections_not_their_names(self):
+        # Real assembler and compiler output (tools/testdata/elf/README.md):
+        # a .incbin data object like ICU's, and code compiled with -fno-ident.
+        # Each is filed under the other's name, so only the section contents
+        # can decide.
+        data_only = (FIXTURES / "data-only-incbin.x86_64.o").read_bytes()
+        code = (FIXTURES / "code-no-ident.x86_64.o").read_bytes()
+        self.assertEqual(linux_tool.elf_facts(data_only), {"machine": "x64", "comments": [], "code": False})
+        self.assertEqual(linux_tool.elf_facts(code), {"machine": "x64", "comments": [], "code": True})
+        archive = self.tmp / "skia-build-linux-x64-gpu-release.zip"
+        libs = [("build/linux-gpu/lib/libskia.a", gnu_ar([("a.o", elf())])),
+                ("build/linux-gpu/lib/libdawn_combined.a", gnu_ar([("d.o", elf())]))]
+        write_zip(archive, libs + [("build/linux-gpu/lib/libskunicode_icu.a",
+                                     gnu_ar([("core.o", data_only)]))])
+        self.assertEqual(linux_tool.validate_receipt(self.receipt(archive), archive, **CELL), [])
+        write_zip(archive, libs + [("build/linux-gpu/lib/libskunicode_icu.a",
+                                     gnu_ar([("icudtl_dat.o", code)]))])
+        problems = linux_tool.validate_receipt(self.receipt(archive), archive, **CELL)
+        self.assertTrue(any("1 ELF member(s) without .comment" in p for p in problems), problems)
 
     def test_a_member_whose_sections_cannot_be_read_counts_as_code(self):
         stripped = bytearray(elf(comments=(), text=0, rodata=64))

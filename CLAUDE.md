@@ -138,18 +138,18 @@ ghapp workflow run create-xcframework.yml -f release_tag=chrome/m152
 
 ### Publish an already built Apple archive
 
-`publish-apple-build.yml` publishes one archive from a successful `build-skia.yml`
-dispatch on `main`, without rebuilding. Supply the exact run and latest attempt,
-existing milestone tag, canonical archive basename, expected archive SHA256 and
-original published archive SHA256 (retain it on retries), and replacement reason. It verifies the original hosted attestation for the archive,
-legal manifest and toolchain receipt; requires the build lock to match the
-published release lock; then uses the existing explicit replacement guard. Other
-release assets and earlier replacement ledger entries must survive unchanged.
+`publish-apple-build.yml` publishes one missing archive from a successful
+`build-skia.yml` dispatch on `main`, without rebuilding. Supply the exact run and
+latest attempt, existing milestone tag, canonical archive basename, and expected
+archive SHA256. It verifies the original hosted attestation for the archive, legal
+manifest and toolchain receipt; requires the build lock to match the published
+release lock; then uses the immutable asset guard. An identical retry is safe, but
+a changed asset is refused and must be published under a new release tag or asset
+name with consumer pins updated in the same change. Other release assets must
+survive unchanged.
 The workflow must be merged to `main` before dispatch; a branch cannot publish.
 
-If publication fails after an upload, inspect the release before retrying. A
-failed ledger update can leave the new archive installed without its replacement
-entry; identical-byte retries do not repair that history automatically. Preserve
-the before/after digests and repair the missing entry through the normal release
-notes path before claiming completion. The provenance-rebind workflow is only
-for member-identical archives and cannot publish a corrected binary.
+If publication fails after an upload, inspect the release before retrying. An
+identical-byte retry is safe; a changed archive is refused and cannot replace the
+published bytes. The provenance-rebind workflow is only for member-identical
+archives and cannot publish a corrected binary.

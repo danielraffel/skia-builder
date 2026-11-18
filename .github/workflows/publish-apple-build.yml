@@ -15,7 +15,7 @@ on:
         required: true
         type: string
       release_tag:
-        description: 'Existing destination milestone, matching the build source lock'
+        description: 'Existing destination milestone for a missing archive or identical retry'
         required: true
         type: string
       asset:
@@ -32,10 +32,6 @@ on:
           - skia-build-visionos-simulator-arm64-gpu-release.zip
       archive_sha256:
         description: 'Explicit expected SHA256 of the archive'
-        required: true
-        type: string
-      previous_archive_sha256:
-        description: 'Original published archive SHA256; retain this value on retries'
         required: true
         type: string
 
@@ -101,7 +97,7 @@ jobs:
           github-token: ${{ github.token }}
           name: skia-release-lock
           path: rebuild/skia-release-lock
-      - name: Bind the downloaded archive to the existing release
+      - name: Bind the downloaded archive to the destination release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
@@ -175,7 +171,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           ASSET: ${{ inputs.asset }}
-          PREVIOUS_SHA256: ${{ inputs.previous_archive_sha256 }}
           ARCHIVE_SHA256: ${{ inputs.archive_sha256 }}
         run: |
           set -euo pipefail
@@ -184,14 +179,6 @@ jobs:
             --pattern skia-release-lock.json --dir published
           cmp staged/skia-release-lock.json published/skia-release-lock.json
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > before.json
-          python3 - <<'PY'
-          import json, os, sys
-          from pathlib import Path
-          sys.path.insert(0, "tools")
-          from prepare_apple_publication import check_destination
-          check_destination(json.loads(Path("before.json").read_text()), os.environ["ASSET"],
-                            os.environ["PREVIOUS_SHA256"], os.environ["ARCHIVE_SHA256"])
-          PY
           python3 tools/release_asset_guard.py --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" \
             publish staged/*.zip staged/*.json \
             --repin-hint 'Repin {asset} to sha256:{new} with its verified provenance records.'
@@ -203,6 +190,6 @@ jobs:
           from prepare_apple_publication import verify_published
           verify_published(json.loads(Path("before.json").read_text()),
                            json.loads(Path("after.json").read_text()), Path("staged"),
-                           os.environ["ASSET"], "", os.environ["PREVIOUS_SHA256"])
+                           os.environ["ASSET"], "", None)
           print("PASS: published digests and preserved assets")
           PY

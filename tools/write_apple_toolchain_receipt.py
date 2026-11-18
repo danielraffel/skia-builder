@@ -228,7 +228,8 @@ def build_receipt(platform_name: str, archs: list[str], configuration: str, vari
     receipt: dict[str, object] = {
         "schema": SCHEMA,
         "target": {"platform": platform_name, "architectures": archs, "configuration": configuration,
-                   "variant": variant, "minimum_os": min_os, "sdk_name": sdk},
+                   "variant": variant, "minimum_os": min_os, "sdk_name": sdk,
+                   **({"target": target} if target else {})},
         "runner": {
             "image_os": os.environ.get("ImageOS", "local"),
             "image_version": os.environ.get("ImageVersion", "local"),

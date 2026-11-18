@@ -61,12 +61,14 @@ def cell_problems(name: str, claimed: object, *, label: str) -> list[str]:
         return [str(error)]
     claimed = claimed if isinstance(claimed, dict) else {}
     problems = []
-    if claimed.get("platform") != expected["platform"]:
-        problems.append(f"{label}.platform {claimed.get('platform')!r} != {expected['platform']!r}")
-    architectures = claimed.get("architectures")
-    if not isinstance(architectures, list) or sorted(map(str, architectures)) != expected["architectures"]:
-        problems.append(f"{label}.architectures {architectures!r} != {expected['architectures']!r}")
-    for key in ("variant", "configuration"):
-        if claimed.get(key) != expected[key]:
-            problems.append(f"{label}.{key} {claimed.get(key)!r} != {expected[key]!r}")
+    # Every field the name promises is compared; none is optional.
+    for key, want in expected.items():
+        have = claimed.get(key)
+        if key == "architectures":
+            have = sorted(map(str, have)) if isinstance(have, list) else have
+        elif key == "target":
+            # Cells without a device/simulator split record no target.
+            have = claimed.get(key, "")
+        if have != want:
+            problems.append(f"{label}.{key} {claimed.get(key)!r} != {want!r}")
     return problems

@@ -307,7 +307,7 @@ class LegalManifestTests(unittest.TestCase):
         # The cell is the one the archive's name promises: a manifest rewritten
         # to claim another cell, or not content-addressed at all, is refused.
         for key, value in (("platform", "ios"), ("architectures", ["x86_64"]),
-                           ("configuration", "Debug"), ("variant", "cpu")):
+                           ("configuration", "Debug"), ("variant", "cpu"), ("target", "simulator")):
             manifest = json.loads(asset.read_bytes())
             manifest["cell"][key] = value
             data = manifest_tool.canonical_bytes(manifest)
@@ -477,6 +477,40 @@ class ArchiveCellTests(unittest.TestCase):
                          "Debug")
         self.assertEqual(archive_cell.cell_for_archive("skia-build-linux-arm64-gpu-release.zip")["platform"],
                          "linux")
+
+    def test_every_derived_field_is_compared(self):
+        name = "skia-build-ios-simulator-arm64-x86_64-gpu-release.zip"
+        expected = archive_cell.cell_for_archive(name)
+        self.assertEqual(archive_cell.cell_problems(name, dict(expected), label="cell"), [])
+        other = {"platform": "visionos", "target": "device", "architectures": ["arm64"],
+                 "variant": "cpu", "configuration": "Debug"}
+        self.assertEqual(set(other), set(expected))
+        for key in expected:
+            claimed = dict(expected, **{key: other[key]})
+            with self.subTest(key=key):
+                self.assertTrue(any(p.startswith(f"cell.{key} ") for p in
+                                    archive_cell.cell_problems(name, claimed, label="cell")))
+
+    def test_device_and_simulator_records_cannot_be_swapped(self):
+        for platform, archs in (("ios", "arm64"), ("visionos", "arm64")):
+            device = f"skia-build-{platform}-device-{archs}-gpu-release.zip"
+            simulator = f"skia-build-{platform}-simulator-{archs}-gpu-release.zip"
+            for name, claimed_from in ((device, simulator), (simulator, device)):
+                claimed = archive_cell.cell_for_archive(claimed_from)
+                with self.subTest(name=name):
+                    self.assertTrue(any(p.startswith("cell.target ") for p in
+                                        archive_cell.cell_problems(name, claimed, label="cell")))
+                    # The Apple receipt check goes through the same comparison.
+                    sdk = (receipt_tool.SIMULATOR_SDK_NAMES if "simulator" in name
+                           else receipt_tool.SDK_NAMES)[platform]
+                    receipt_target = dict(claimed, sdk_name=sdk)
+                    self.assertTrue(any(p.startswith("target.target ") for p in
+                                        receipt_tool.target_problems(receipt_target, name)))
+        # A mac record claiming a device/simulator target is refused too.
+        self.assertTrue(archive_cell.cell_problems(
+            "skia-build-mac-arm64-gpu-release.zip",
+            {"platform": "mac", "target": "simulator", "architectures": ["arm64"],
+             "variant": "gpu", "configuration": "Release"}, label="cell"))
 
     def test_an_unknown_name_fails_closed(self):
         for name in ("other.zip", "skia-build-linux-riscv64-gpu-release.zip",

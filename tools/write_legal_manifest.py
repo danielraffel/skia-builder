@@ -709,6 +709,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--platform", default="")
     parser.add_argument("--variant", default="")
     parser.add_argument("--configuration", default="")
+    parser.add_argument("--target", default="", help="device or simulator (iOS/visionOS)")
     parser.add_argument("--content-addressed-dir", type=Path,
                         help="also write <archive>.legal-manifest.sha256-<digest>.json here")
     parser.add_argument("--check", action="store_true",
@@ -746,7 +747,8 @@ def main(argv: list[str] | None = None) -> int:
     graph = BuildGraph(args.source_root, out_dirs, args.ninja, builder_root=args.builder_root,
                        toolchain_roots=args.toolchain_root or default_toolchain_roots(args.platform))
     cell = {"platform": args.platform, "variant": args.variant,
-            "configuration": args.configuration, "architectures": sorted(out_dirs)}
+            "configuration": args.configuration, "architectures": sorted(out_dirs),
+            **({"target": args.target} if args.target else {})}
     expected = {name: value for name, value in (("skia", args.expect_skia_revision),
                                                 ("dawn", args.expect_dawn_revision)) if value}
     manifest = build_manifest(args.archive, graph, cell, gn, expected)

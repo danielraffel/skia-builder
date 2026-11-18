@@ -33,24 +33,27 @@ CELL_ARGS = ["--arch", "x64", "--configuration", "Release", "--variant", "gpu"]
 CLANG = "clang version 20.1.0 (https://github.com/llvm/llvm-project 24a30daaa559829ad079f2ff7f73eb4e18095f88)"
 
 
-def elf(machine=62, comments=(CLANG,)):
-    """A minimal little-endian ELF64 relocatable with a .comment section."""
-    comment = b"".join(text.encode() + b"\0" for text in comments)
-    names = b"\0.comment\0.shstrtab\0"
-    body = 64
-    comment_offset = body
-    names_offset = comment_offset + len(comment)
+def elf(machine=62, comments=(CLANG,), text=16, rodata=0):
+    """A minimal little-endian ELF64 relocatable with .comment, .text and .rodata sections."""
+    comment = b"".join(text_.encode() + b"\0" for text_ in comments)
+    names = b"\0.comment\0.shstrtab\0.text\0.rodata\0"
+    comment_offset = 64
+    text_offset = comment_offset + len(comment)
+    rodata_offset = text_offset + text
+    names_offset = rodata_offset + rodata
     shoff = names_offset + len(names)
 
-    def section(name, offset, size, kind):
-        return struct.pack("<IIQQQQIIQQ", name, kind, 0, 0, offset, size, 0, 0, 1, 0)
+    def section(name, offset, size, kind, flags=0):
+        return struct.pack("<IIQQQQIIQQ", name, kind, flags, 0, offset, size, 0, 0, 1, 0)
 
     sections = (b"\0" * 64 + section(1, comment_offset, len(comment), 1)
-                + section(10, names_offset, len(names), 3))
+                + section(10, names_offset, len(names), 3)
+                + section(20, text_offset, text, 1, flags=0x6)
+                + section(26, rodata_offset, rodata, 1, flags=0x2))
     ident = b"\x7fELF" + bytes([2, 1, 1, 0]) + b"\0" * 8
-    header = ident + struct.pack("<HHIQQQIHHHHHH", 1, machine, 1, 0, 0, shoff, 0, 64, 0, 0, 64, 3, 2)
+    header = ident + struct.pack("<HHIQQQIHHHHHH", 1, machine, 1, 0, 0, shoff, 0, 64, 0, 0, 64, 5, 2)
     assert len(header) == 64
-    return header + comment + names + sections
+    return header + comment + b"\x90" * text + b"\0" * rodata + names + sections
 
 
 def coff(machine):
@@ -220,6 +223,43 @@ class LinuxReceiptTests(unittest.TestCase):
         receipt = self.receipt(archive)
         problems = linux_tool.validate_receipt(receipt, archive, **CELL)
         self.assertTrue(any("not ELF" in p for p in problems), problems)
+        self.assertTrue(any("without .comment" in p for p in problems), problems)
+
+    def test_a_data_only_member_needs_no_compiler_record(self):
+        # ICU's icudtl.dat is assembled into an object with an empty .text
+        # and its data in .rodata, so no compiler ever stamps a .comment.
+        archive = self.tmp / "skia-build-linux-x64-gpu-release.zip"
+        write_zip(archive, [
+            ("build/linux-gpu/lib/libskia.a", gnu_ar([("a.o", elf())])),
+            ("build/linux-gpu/lib/libdawn_combined.a", gnu_ar([("d.o", elf())])),
+            ("build/linux-gpu/lib/libskunicode_icu.a",
+             gnu_ar([("icudtl_dat.o", elf(comments=(), text=0, rodata=4096))])),
+        ])
+        receipt = self.receipt(archive)
+        self.assertEqual(receipt["observed_elf"]["members_without_comment"], 0)
+        self.assertEqual(linux_tool.validate_receipt(receipt, archive, **CELL), [])
+
+    def test_a_commentless_member_with_code_is_refused(self):
+        archive = self.tmp / "skia-build-linux-x64-gpu-release.zip"
+        write_zip(archive, [
+            ("build/linux-gpu/lib/libskia.a", gnu_ar([("a.o", elf())])),
+            ("build/linux-gpu/lib/libskunicode_icu.a",
+             gnu_ar([("hidden.o", elf(comments=(), text=16, rodata=4096))])),
+        ])
+        receipt = self.receipt(archive)
+        self.assertEqual(receipt["observed_elf"]["members_without_comment"], 1)
+        problems = linux_tool.validate_receipt(receipt, archive, **CELL)
+        self.assertTrue(any("without .comment" in p for p in problems), problems)
+
+    def test_a_member_whose_sections_cannot_be_read_counts_as_code(self):
+        stripped = bytearray(elf(comments=(), text=0, rodata=64))
+        stripped[40:48] = struct.pack("<Q", len(stripped) * 4)  # section table past the end
+        facts = linux_tool.elf_facts(bytes(stripped))
+        self.assertTrue(facts["code"])
+        archive = self.tmp / "skia-build-linux-x64-gpu-release.zip"
+        write_zip(archive, [("build/linux-gpu/lib/libskia.a",
+                             gnu_ar([("a.o", elf()), ("stripped.o", bytes(stripped))]))])
+        problems = linux_tool.validate_receipt(self.receipt(archive), archive, **CELL)
         self.assertTrue(any("without .comment" in p for p in problems), problems)
 
     def test_an_unknown_compiler_banner_is_refused(self):

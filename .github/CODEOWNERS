@@ -1,0 +1,25 @@
+# Release path: a pull request that changes any file listed here, or any
+# workflow or local action, needs two counted reviewer APPROVEs of its exact
+# head (the `release-path-review` status, .github/workflows/release-path-review.yml).
+# Entries must be anchored file paths: the rule refuses globs and directories.
+/.github/CODEOWNERS @danielraffel
+/.shipyard/config.toml @danielraffel
+/.github/workflows/review-verdict.yml @danielraffel
+/.github/workflows/review-verdict-trigger.yml @danielraffel
+/.github/workflows/release-path-review.yml @danielraffel
+/.github/workflows/release-path-review-trigger.yml @danielraffel
+/.github/workflows/build-skia.yml @danielraffel
+/.github/workflows/create-xcframework.yml @danielraffel
+/.github/workflows/rebind-provenance.yml @danielraffel
+/tools/rebind_provenance.py @danielraffel
+/tools/write_windows_toolchain_provenance.py @danielraffel
+/tools/write_apple_toolchain_receipt.py @danielraffel
+/tools/write_legal_manifest.py @danielraffel
+/tools/apple_archive.py @danielraffel
+/tools/compare_archive_members.py @danielraffel
+/tools/release_asset_guard.py @danielraffel
+/tools/skia_release_lock.py @danielraffel
+/tools/check_release_coverage.py @danielraffel
+/tools/check_windows_archive.py @danielraffel
+/tools/check_linux_archive.py @danielraffel
+/tools/test_release_path_gate.py @danielraffel

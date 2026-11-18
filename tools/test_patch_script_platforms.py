@@ -28,7 +28,9 @@ class PatchScriptPlatformTests(unittest.TestCase):
     def test_every_windows_script_is_gated_to_windows(self):
         scripts = {path.name for path in (ROOT / "patches").glob("apply_*.py")}
         windows = {name for name in scripts if "windows" in name}
-        self.assertEqual(set(build_skia.PATCH_SCRIPT_PLATFORMS), windows)
+        self.assertEqual(set(build_skia.PATCH_SCRIPT_PLATFORMS),
+                         windows | {"apply_dawn_macos_msl_version.py"})
+        self.assertEqual(build_skia.PATCH_SCRIPT_PLATFORMS["apply_dawn_macos_msl_version.py"], {"mac"})
         for name in windows:
             self.assertEqual(build_skia.PATCH_SCRIPT_PLATFORMS[name], {"win"}, name)
 
@@ -38,6 +40,9 @@ class PatchScriptPlatformTests(unittest.TestCase):
         features = tmp / "include" / "private" / "SkFeatures.h"
         features.parent.mkdir(parents=True)
         shutil.copy(PUBLISHED_FEATURES, features)
+        dawn = tmp / "third_party/externals/dawn/src/dawn/native/metal/ShaderModuleMTL.mm"
+        dawn.parent.mkdir(parents=True)
+        dawn.write_text("    NSRef<MTLCompileOptions> compileOptions = AcquireNSRef([[MTLCompileOptions alloc] init]);\n")
         script = build_skia.SkiaBuildScript.__new__(build_skia.SkiaBuildScript)
         script.platform = platform
         cwd = os.getcwd()

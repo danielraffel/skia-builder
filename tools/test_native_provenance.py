@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -429,6 +430,48 @@ class WindowsStagingTests(unittest.TestCase):
     def check(self, archive, staged_path):
         return stage_tool.main(["--archive", str(archive), "--arch", "x64", "--configuration",
                                 "Release", "--variant", "gpu", "--check", str(staged_path)])
+
+    def test_a_real_runner_receipt_round_trips_on_windows_and_linux(self):
+        # The shape a windows-11-arm runner records: a cl.exe path that mixes
+        # separators, a toolset directory (14.52.37025) older than the build
+        # number its tools print (14.52.37029), and a real hash per tool.
+        # It is staged on Windows and re-checked on both Windows and Linux.
+        cl = r"C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC/Tools/MSVC/14.52.37025/bin/HostX64/x64/cl.exe"
+        receipt = self.receipt(toolset="14.52.37025")
+        compiler = dict(receipt["producer"]["skia_gn_compiler"], path=cl,
+                        version="Microsoft (R) C/C++ Optimizing Compiler Version 19.52.37029 for x64")
+        receipt["producer"]["skia_gn_compiler"] = receipt["producer"]["dawn_cmake_compiler"] = compiler
+        hashes = {"cl.exe": "a1" * 32, "link.exe": "b2" * 32, "lib.exe": "c3" * 32}
+
+        def banner(path):
+            return ("Microsoft (R) Incremental Linker Version 14.52.37029.0" if path.endswith("link.exe")
+                    else "Microsoft (R) Library Manager Version 14.52.37029.0")
+
+        def hasher(path):
+            return hashes[str(path).replace("/", "\\").rsplit("\\", 1)[-1]]
+
+        with tempfile.TemporaryDirectory() as temporary:
+            tmp = pathlib.Path(temporary)
+            archive = self.archive(tmp, receipt)
+            source = archive_receipt_bytes(archive)
+            with mock.patch.object(stage_tool, "Path", pathlib.PureWindowsPath):
+                staged = stage_tool.derive(archive, json.loads(source), source, "x64", "Release", "gpu",
+                                           banner=banner, hasher=hasher)
+            self.assertEqual(staged["compiler"]["cxx"]["sha256"], hashes["cl.exe"])
+            self.assertTrue(staged["linker"]["path"].endswith("\\x64\\link.exe"), staged["linker"]["path"])
+            data = stage_tool.canonical_bytes(staged)
+            path = tmp / stage_tool.content_addressed_name(archive.name, data)
+            path.write_bytes(data)
+            with mock.patch.object(stage_tool, "Path", pathlib.PureWindowsPath):
+                self.assertEqual(stage_tool.problems_for(archive, staged, source, "x64", "Release", "gpu"), [])
+            self.assertEqual(stage_tool.problems_for(archive, staged, source, "x64", "Release", "gpu"), [])
+            self.assertEqual(self.check(archive, path), 0)
+            # A banner from another MSVC release is still refused.
+            for name in ("linker", "archiver"):
+                other = json.loads(data)
+                other[name]["version"] = other[name]["version"].replace("14.52.", "14.44.")
+                problems = stage_tool.problems_for(archive, other, source, "x64", "Release", "gpu")
+                self.assertTrue(any(f"{name}.version is not from toolset" in p for p in problems), problems)
 
     def test_stage_then_check_round_trips(self):
         with tempfile.TemporaryDirectory() as temporary:

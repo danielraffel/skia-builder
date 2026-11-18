@@ -11,6 +11,8 @@ on:
       - '.github/workflows/build-skia.yml'
       - '.github/workflows/watch-skia.yml'
       - '.github/workflows/lint.yml'
+      - 'patches/apply_dawn_macos_msl_version.py'
+      - 'patches/test_apply_dawn_macos_msl_version.py'
       - 'patches/apply_dawn_ios_visionos.py'
       - 'patches/test_apply_dawn_ios_visionos.py'
       - 'patches/apply_dawn_windows_arm64_vector_stl.py'
@@ -50,6 +52,8 @@ on:
       - 'tools/test_release_tag.py'
       - 'tools/test_patch_script_platforms.py'
       - 'tools/check_rebuild_run.py'
+      - 'tools/prepare_apple_publication.py'
+      - 'tools/test_prepare_apple_publication.py'
       - 'tools/testdata/**'
       - 'tools/requirements-lint.txt'
       - 'tools/test_lint_requirements.py'
@@ -99,6 +103,7 @@ jobs:
       # Every active build-matrix lane must be uploaded by create-release.
       # Catches the chrome/m150 regression: a lane built but never released.
       - run: python3 tools/check_release_coverage.py
+      - run: python3 patches/test_apply_dawn_macos_msl_version.py
       - run: python3 patches/test_apply_dawn_ios_visionos.py
       - run: python3 patches/test_apply_dawn_windows_arm64_vector_stl.py
       - run: python3 tools/test_skia_release_lock.py
@@ -118,6 +123,7 @@ jobs:
       - run: sudo apt-get install -y -qq ninja-build
       - run: python3 tools/test_apple_provenance.py
       - run: python3 tools/test_rebind_workflow.py
+      - run: python3 tools/test_prepare_apple_publication.py
       - run: python3 tools/test_attest_subjects.py
       # Linux and Windows archives publish the same records; the receipts and the
       # non-Mach-O archive reader are tested on fixtures.

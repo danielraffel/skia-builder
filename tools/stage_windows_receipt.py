@@ -32,7 +32,7 @@ import re
 import subprocess
 import sys
 import zipfile
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apple_archive  # noqa: E402
@@ -114,7 +114,9 @@ def run_banner(program: str) -> str:
 def tool_row(path: str, vendor: str, banner: str, hasher=None) -> dict[str, str]:
     row = {"vendor": vendor, "path": path, "version": banner, "sha256": "unknown"}
     try:
-        row["sha256"] = (hasher or sha256_file)(Path(path))
+        # A supplied hasher gets the path exactly as recorded, so a lookup by
+        # that path does not depend on how the host's pathlib rewrites it.
+        row["sha256"] = hasher(path) if hasher else sha256_file(Path(path))
     except OSError as error:
         row["sha256"] = f"error: {error}"
     return row
@@ -124,10 +126,12 @@ def derive(archive: Path, source: dict, source_bytes: bytes, arch: str, configur
            variant: str, banner=run_banner, hasher=None) -> dict:
     producer = source.get("producer") or {}
     cl = (producer.get("skia_gn_compiler") or {}).get("path", "")
-    directory = str(Path(cl).parent) if cl else ""
-    sep = "\\" if "\\" in cl else "/"
-    link = f"{directory}{sep}link.exe"
-    lib = f"{directory}{sep}lib.exe"
+    # cl.exe is a Windows path.  Parse it as one on every host, so the
+    # Windows runner that stages this and the Linux job that re-checks it
+    # derive the same link.exe and lib.exe paths.
+    directory = str(PureWindowsPath(cl).parent) if cl else ""
+    link = f"{directory}\\link.exe"
+    lib = f"{directory}\\lib.exe"
     toolset = producer.get("msvc_toolset_version", "unknown")
     return {
         "schema": SCHEMA,
@@ -172,9 +176,14 @@ def derived_field_problems(archive: Path, staged: dict, source: dict, source_byt
     problems = [f"{key} does not match the receipt inside the archive: staged {staged.get(key)!r}, "
                 f"derived {expected[key]!r}"
                 for key in DERIVED_FIELDS if staged.get(key) != expected[key]]
+    # The tools report their own build number, which need not equal the
+    # toolset directory's (toolset 14.52.37025 ships link.exe 14.52.37029),
+    # so a banner must name the toolset's major.minor release.
     toolset = str((source.get("producer") or {}).get("msvc_toolset_version", ""))
+    release = re.match(r"^(\d+\.\d+)\.\d+$", toolset)
     for name in ("linker", "archiver"):
-        if not toolset or toolset not in str((staged.get(name) or {}).get("version", "")):
+        version = re.search(r"Version (\d+\.\d+)\.", str((staged.get(name) or {}).get("version", "")))
+        if not release or not version or version.group(1) != release.group(1):
             problems.append(f"{name}.version is not from toolset {toolset!r}")
     return problems
 

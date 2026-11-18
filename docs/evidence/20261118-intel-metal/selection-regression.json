@@ -1,0 +1,40 @@
+{
+  "modern": {
+    "results": [
+      {
+        "error": "",
+        "default": 196610,
+        "selected": false,
+        "effective": 196610,
+        "compiled": 1
+      },
+      {
+        "error": "",
+        "default": 196610,
+        "selected": true,
+        "effective": 196610,
+        "compiled": 1
+      }
+    ],
+    "device": "Intel(R) UHD Graphics 630"
+  },
+  "old_sdk": {
+    "results": [
+      {
+        "error": "program_source:3:26: error: no template named 'array'\nkernel void probe(device array<float,4>& a [[buffer(0)]]) { a[0]=1.0f; }\n                         ^\n",
+        "default": 65538,
+        "selected": false,
+        "effective": 65538,
+        "compiled": 0
+      },
+      {
+        "error": "",
+        "default": 65538,
+        "selected": true,
+        "effective": 196610,
+        "compiled": 1
+      }
+    ],
+    "device": "Intel(R) UHD Graphics 630"
+  }
+}

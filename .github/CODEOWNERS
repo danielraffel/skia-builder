@@ -23,3 +23,5 @@
 /tools/check_windows_archive.py @danielraffel
 /tools/check_linux_archive.py @danielraffel
 /tools/test_release_path_gate.py @danielraffel
+/.github/workflows/publish-apple-build.yml @danielraffel
+/tools/prepare_apple_publication.py @danielraffel

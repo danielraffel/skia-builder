@@ -42,6 +42,8 @@ on:
       - 'tools/test_attest_subjects.py'
       - 'tools/test_patch_script_platforms.py'
       - 'tools/check_rebuild_run.py'
+      - 'tools/prepare_apple_publication.py'
+      - 'tools/test_prepare_apple_publication.py'
       - 'tools/testdata/**'
       - 'tools/requirements-lint.txt'
       - 'tools/test_lint_requirements.py'
@@ -111,6 +113,7 @@ jobs:
       - run: sudo apt-get install -y -qq ninja-build
       - run: python3 tools/test_apple_provenance.py
       - run: python3 tools/test_rebind_workflow.py
+      - run: python3 tools/test_prepare_apple_publication.py
       - run: python3 tools/test_attest_subjects.py
       # Only main may write to a release.
       - run: python3 tools/test_publish_ref_gate.py

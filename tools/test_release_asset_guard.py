@@ -126,7 +126,9 @@ class GuardEndToEnd(unittest.TestCase):
         self.assertIn("REFUSED", result.stderr)
         self.assertIn("published:  sha256:" + sha(b"published bytes"), result.stderr)
         self.assertIn("this build: sha256:" + sha(b"rebuilt bytes"), result.stderr)
-        self.assertIn(f"replace_asset={name}", result.stderr)
+        self.assertIn("Published assets are immutable", result.stderr)
+        self.assertIn("new release tag (or a new asset name)", result.stderr)
+        self.assertIn("update consumer pins in the same change", result.stderr)
         self.assertIn(f"set {name} sha256 {sha(b'published bytes')} -> {sha(b'rebuilt bytes')}",
                       result.stderr)
         self.assertEqual(fake.uploads(), [])
@@ -154,72 +156,40 @@ class GuardEndToEnd(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertEqual(fake.uploads(), [], "a refusal must not leave a partial upload behind")
 
-    def test_override_replaces_and_records_both_digests(self):
+    def test_override_is_refused_even_with_reason(self):
         name = "skia-build-win-arm64-gpu-release.zip"
         fake = FakeRelease(self.tmp, {name: b"clang abi"}, body="Matched V8 notes\n")
         result = fake.run("publish", self.local(name, b"msvc abi"),
                           "--allow-replace", name, "--reason", "rebuilt with the MSVC ABI")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("old sha256:" + sha(b"clang abi"), result.stdout)
-        self.assertIn("new sha256:" + sha(b"msvc abi"), result.stdout)
-        uploads = fake.uploads()
-        self.assertEqual(len(uploads), 1)
-        self.assertIn("--clobber", uploads[0])
-        rel = fake.state["release"]
-        self.assertEqual(rel["assets"][0]["digest"], "sha256:" + sha(b"msvc abi"))
-        self.assertTrue(rel["body"].startswith("Matched V8 notes"))
-        ledger = guard.extract_ledger(rel["body"])
-        self.assertEqual(len(ledger), 1)
-        self.assertIn(sha(b"clang abi"), ledger[0])
-        self.assertIn(sha(b"msvc abi"), ledger[0])
-        self.assertIn("rebuilt with the MSVC ABI", ledger[0])
-        self.assertIn("Release asset replaced", (self.tmp / "summary.md").read_text())
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(guard.IMMUTABLE_MESSAGE, result.stderr)
+        self.assertEqual(fake.uploads(), [])
+        self.assertEqual(fake.state["release"]["assets"][0]["digest"],
+                         "sha256:" + sha(b"clang abi"))
 
-    def test_replacement_that_does_not_land_fails_and_records_nothing(self):
-        # gh can report success while the release still serves the old bytes
-        # (a stale upload, a race with another writer).  The guard must re-read
-        # the release and refuse to record a replacement it cannot see.
-        name = "a.zip"
-        fake = FakeRelease(self.tmp, {name: b"old"}, body="notes\n")
-        result = fake.run("publish", self.local(name, b"new"), "--allow-replace", name,
-                          "--reason", "r", FAKE_GH_UPLOAD_DOES_NOT_LAND="1")
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("expected sha256:" + sha(b"new"), result.stderr)
-        self.assertEqual(len(fake.uploads()), 1)
-        reads = [c for c in fake.state["calls"] if c[0] == "api" and "/releases/tags/" in c[1]]
-        self.assertEqual(len(reads), 2, "the release must be re-read after the replacement")
-        self.assertEqual(guard.extract_ledger(fake.state["release"]["body"]), [])
-
-    def test_override_requires_reason(self):
+    def test_override_is_refused_without_reason(self):
         name = "a.zip"
         fake = FakeRelease(self.tmp, {name: b"old"})
         result = fake.run("publish", self.local(name, b"new"), "--allow-replace", name)
         self.assertEqual(result.returncode, 1)
-        self.assertIn("requires --reason", result.stderr)
+        self.assertIn(guard.IMMUTABLE_MESSAGE, result.stderr)
         self.assertEqual(fake.uploads(), [])
 
-    def test_override_must_name_a_published_file(self):
-        fake = FakeRelease(self.tmp, {"a.zip": b"old"})
-        result = fake.run("publish", self.local("a.zip", b"new"),
-                          "--allow-replace", "typo.zip", "--reason", "r")
+    def test_override_is_refused_for_absent_or_identical_asset(self):
+        fake = FakeRelease(self.tmp, {"a.zip": b"same"})
+        result = fake.run("publish", self.local("a.zip", b"same"),
+                          self.local("new.zip", b"new"), "--allow-replace", "a.zip")
         self.assertEqual(result.returncode, 1)
-        self.assertIn("typo.zip", result.stderr)
-        self.assertEqual(fake.uploads(), [])
-
-    def test_override_only_covers_the_named_asset(self):
-        fake = FakeRelease(self.tmp, {"a.zip": b"a-old", "b.zip": b"b-old"})
-        result = fake.run("publish", self.local("a.zip", b"a-new"), self.local("b.zip", b"b-new"),
-                          "--allow-replace", "a.zip", "--reason", "r")
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("b.zip", result.stderr)
+        self.assertIn(guard.IMMUTABLE_MESSAGE, result.stderr)
         self.assertEqual(fake.uploads(), [])
 
     def test_dry_run_never_uploads(self):
         fake = FakeRelease(self.tmp, {"a.zip": b"old"})
-        result = fake.run("publish", self.local("a.zip", b"new"), self.local("n.zip", b"n"),
-                          "--allow-replace", "a.zip", "--reason", "r", "--dry-run")
+        result = fake.run("publish", self.local("a.zip", b"old"), self.local("n.zip", b"n"),
+                          "--dry-run")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("replace", result.stdout)
+        self.assertIn("skip-identical", result.stdout)
+        self.assertIn("upload", result.stdout)
         self.assertEqual(fake.uploads(), [])
 
     def test_missing_release_refused_for_backfill(self):
@@ -280,6 +250,18 @@ class WorkflowsUseTheGuard(unittest.TestCase):
                 if "--clobber" in code or "release upload" in code:
                     offenders.append(f"{path.name}:{number}: {line.strip()}")
         self.assertEqual(offenders, [], "use tools/release_asset_guard.py instead")
+
+    def test_no_workflow_exposes_replacement_override(self):
+        workflows = HERE.parent / ".github" / "workflows"
+        offenders = []
+        for path in sorted(workflows.glob("*.yml")):
+            for number, line in enumerate(path.read_text().splitlines(), 1):
+                code = line.split("#", 1)[0]
+                if any(token in code for token in ("--allow-replace", "replace_asset:",
+                                                 "replace_reason:", "inputs.replace_asset",
+                                                 "inputs.replace_reason")):
+                    offenders.append(f"{path.name}:{number}: {line.strip()}")
+        self.assertEqual(offenders, [])
 
     def test_action_gh_release_never_overwrites(self):
         # A text scan rather than a YAML parse keeps this test dependency-free:

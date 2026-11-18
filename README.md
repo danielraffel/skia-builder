@@ -101,13 +101,9 @@ does), so no workflow replaces published bytes in place.
 - an asset whose bytes differ is refused, and nothing is uploaded. The refusal
   prints the published and new sha256 and the consumer repin steps.
 
-A deliberate rebuild (for example the Windows ARM64 rebuild with the MSVC ABI)
-re-dispatches with `replace_asset=<asset file name>` and
-`replace_reason='<why the published bytes are wrong>'`. The guard replaces only
-that asset, proves the new digest landed, and appends the old and new sha256,
-the reason, the run, and the commit to an "Asset replacements" section in the
-release notes. Repin consumers in the same change. `create-xcframework.yml`
-takes `replace_reason` for `Skia.xcframework.zip` the same way.
+Publish a corrected build under a new release tag or a new asset name, then
+update consumer pins in the same change. This also applies to XCFrameworks and
+platform backfills.
 
 Each Windows GPU archive includes `msvc-toolchain.json`. It records the exact
 MSVC toolset, Windows SDK, compiler drivers, architecture, and `/MT` or `/MTd`
@@ -262,12 +258,12 @@ gh workflow run build-skia.yml -f skia_branch=chrome/m152
 gh workflow run build-skia.yml -f skia_branch=chrome/m152 -f platforms=all -f apple_runner=macos-15-intel
 ```
 
-To republish only the Linux archives of an existing release (for example after a Linux-only build fix), dispatch from `main` with `platforms=linux`, `release_tag` equal to `skia_branch`, and every changed archive named in `replace_asset` (comma-separated) with a `replace_reason`. No other platform's assets or attestations are touched, and the guard records the old and new digests in the release notes:
+To add missing Linux archives to an existing release, dispatch from `main` with
+`platforms=linux` and `release_tag` equal to `skia_branch`. Existing archives
+must have identical bytes; changed archives are refused:
 
 ```bash
-gh workflow run build-skia.yml -f skia_branch=chrome/m158 -f release_tag=chrome/m158 -f platforms=linux \
-  -f replace_asset=skia-build-linux-x64-gpu-release.zip,skia-build-linux-arm64-gpu-release.zip \
-  -f replace_reason="..."
+gh workflow run build-skia.yml -f skia_branch=chrome/m158 -f release_tag=chrome/m158 -f platforms=linux
 ```
 
 Linux archives are checked with `tools/check_linux_archive.py` before upload: no static library may reference PartitionAlloc's `RawPtrBackupRefImpl` without a definition, which is why the Linux GN args set `skia_use_partition_alloc = false`.

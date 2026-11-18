@@ -38,15 +38,11 @@ on:
         description: 'Original published archive SHA256; retain this value on retries'
         required: true
         type: string
-      replace_reason:
-        description: 'Why these exact bytes replace the published archive'
-        required: true
-        type: string
 
 permissions:
   contents: read
 
-# Serialize this workflow's replacements; do not cancel a publisher mid-upload.
+# Serialize publication; do not cancel a publisher mid-upload.
 concurrency:
   group: publish-verified-apple
   cancel-in-progress: false
@@ -174,12 +170,11 @@ jobs:
         with:
           name: verified-apple-publication
           path: staged
-      - name: Publish with the existing explicit replacement guard
+      - name: Publish with the immutable asset guard
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
           ASSET: ${{ inputs.asset }}
-          REASON: ${{ inputs.replace_reason }}
           PREVIOUS_SHA256: ${{ inputs.previous_archive_sha256 }}
           ARCHIVE_SHA256: ${{ inputs.archive_sha256 }}
         run: |
@@ -198,7 +193,7 @@ jobs:
                             os.environ["PREVIOUS_SHA256"], os.environ["ARCHIVE_SHA256"])
           PY
           python3 tools/release_asset_guard.py --repo "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" \
-            publish staged/*.zip staged/*.json --allow-replace "$ASSET" --reason "$REASON" \
+            publish staged/*.zip staged/*.json \
             --repin-hint 'Repin {asset} to sha256:{new} with its verified provenance records.'
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > after.json
           python3 - <<'PY'
@@ -208,6 +203,6 @@ jobs:
           from prepare_apple_publication import verify_published
           verify_published(json.loads(Path("before.json").read_text()),
                            json.loads(Path("after.json").read_text()), Path("staged"),
-                           os.environ["ASSET"], os.environ["REASON"], os.environ["PREVIOUS_SHA256"])
-          print("PASS: published digests, preserved assets and replacement ledger")
+                           os.environ["ASSET"], "", os.environ["PREVIOUS_SHA256"])
+          print("PASS: published digests and preserved assets")
           PY

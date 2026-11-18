@@ -45,6 +45,7 @@ on:
       - 'tools/test_lint_requirements.py'
       - 'tools/test_publish_ref_gate.py'
       - 'tools/test_release_path_gate.py'
+      - 'tools/release_path_rule.py'
       - '.github/CODEOWNERS'
       - '.shipyard/config.toml'
       # Any workflow may gain release write access; the gate test reads them all.

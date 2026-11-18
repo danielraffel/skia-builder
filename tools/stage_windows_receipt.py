@@ -36,6 +36,7 @@ from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apple_archive  # noqa: E402
+import archive_cell  # noqa: E402
 import write_windows_toolchain_provenance as receipt_tool  # noqa: E402
 
 SCHEMA = "skia-builder.msvc-toolchain-receipt.v1"
@@ -147,6 +148,37 @@ def derive(archive: Path, source: dict, source_bytes: bytes, arch: str, configur
     }
 
 
+DERIVED_FIELDS = ("archive", "target", "compiler", "linker", "archiver", "cpp_abi", "msvc_toolset",
+                  "windows_sdk", "observed", "source_receipt")
+
+
+def derived_field_problems(archive: Path, staged: dict, source: dict, source_bytes: bytes,
+                           arch: str, configuration: str, variant: str) -> list[str]:
+    """Every staged field that differs from what ``derive`` makes of the receipt inside the archive.
+
+    Only the link.exe/lib.exe banners and the tool hashes are measured on the
+    runner and cannot be re-derived here; they are taken from the staged
+    record for the exact paths ``derive`` names, so a staged row for any other
+    path, or any other copied or computed field, is a mismatch.  ``runner_image``
+    is the only field ``derive`` does not take from the archive or its receipt.
+    """
+    measured: dict[str, dict] = {}
+    for row in ((staged.get("compiler") or {}).get("cxx"), staged.get("linker"), staged.get("archiver")):
+        if isinstance(row, dict) and isinstance(row.get("path"), str):
+            measured[row["path"]] = row
+    expected = derive(archive, source, source_bytes, arch, configuration, variant,
+                      banner=lambda path: str((measured.get(str(path)) or {}).get("version", "unmeasured")),
+                      hasher=lambda path: str((measured.get(str(path)) or {}).get("sha256", "unmeasured")))
+    problems = [f"{key} does not match the receipt inside the archive: staged {staged.get(key)!r}, "
+                f"derived {expected[key]!r}"
+                for key in DERIVED_FIELDS if staged.get(key) != expected[key]]
+    toolset = str((source.get("producer") or {}).get("msvc_toolset_version", ""))
+    for name in ("linker", "archiver"):
+        if not toolset or toolset not in str((staged.get(name) or {}).get("version", "")):
+            problems.append(f"{name}.version is not from toolset {toolset!r}")
+    return problems
+
+
 def problems_for(archive: Path, staged: dict, source_bytes: bytes, arch: str,
                  configuration: str, variant: str) -> list[str]:
     """Every reason ``staged`` does not prove the named Windows cell of ``archive``.
@@ -181,6 +213,10 @@ def problems_for(archive: Path, staged: dict, source_bytes: bytes, arch: str,
         problems.append(f"staged archive name {(staged.get('archive') or {}).get('name')!r} != {archive.name!r}")
     if (staged.get("source_receipt") or {}).get("sha256") != hashlib.sha256(source_bytes).hexdigest():
         problems.append("staged source_receipt is not the receipt inside the archive")
+    # The caller's cell must be the one the archive's own name promises.
+    problems += archive_cell.cell_problems(
+        archive.name, {"platform": "win", "target": "", "architectures": [arch],
+                       "configuration": configuration, "variant": variant}, label="--check cell")
     target = staged.get("target") or {}
     expected_machine = ARCH_MACHINES.get(str(arch).lower())
     if not expected_machine:
@@ -202,6 +238,8 @@ def problems_for(archive: Path, staged: dict, source_bytes: bytes, arch: str,
         problems.append("linker.version is not a link.exe banner")
     if not LIB_BANNER_RE.search(str((staged.get("archiver") or {}).get("version", ""))):
         problems.append("archiver.version is not a lib.exe banner")
+    problems += derived_field_problems(archive, staged, source, source_bytes, arch, configuration,
+                                       variant)
     observed = staged.get("observed") or {}
     machines = observed.get("coff_machines") or {}
     actual_machines, actual_undecodable = observed_member_machines(archive)

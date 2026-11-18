@@ -41,6 +41,8 @@ on:
       - 'tools/write_linux_toolchain_receipt.py'
       - 'tools/stage_windows_receipt.py'
       - 'tools/archive_cell.py'
+      - 'tools/check_attestation_bundle.py'
+      - 'tools/test_check_attestation_bundle.py'
       - 'tools/test_native_provenance.py'
       - 'tools/release_tag.py'
       - 'tools/test_release_tag.py'
@@ -88,6 +90,8 @@ on:
       - 'tools/write_linux_toolchain_receipt.py'
       - 'tools/stage_windows_receipt.py'
       - 'tools/archive_cell.py'
+      - 'tools/check_attestation_bundle.py'
+      - 'tools/test_check_attestation_bundle.py'
       - 'tools/test_native_provenance.py'
       - 'tools/release_tag.py'
       - 'tools/test_release_tag.py'
@@ -161,8 +165,9 @@ jobs:
       # Linux and Windows archives publish the same records; the receipts and the
       # non-Mach-O archive reader are tested on fixtures.
       - run: python3 tools/test_native_provenance.py
+      - run: python3 tools/test_check_attestation_bundle.py
       # A release_tag other than the branch tag must be the attested re-cut form.
       - run: python3 tools/test_release_tag.py
       # Only main may write to a release.
       - run: python3 tools/test_publish_ref_gate.py
-      - run: python3 -m py_compile build-skia.py patches/apply_dawn_windows_arm64_vector_stl.py tools/skia_release_lock.py tools/matched_v8_link.py tools/release_asset_guard.py tools/check_windows_archive.py tools/check_linux_archive.py tools/write_windows_toolchain_provenance.py tools/apple_archive.py tools/write_legal_manifest.py tools/write_apple_toolchain_receipt.py tools/compare_archive_members.py tools/rebind_provenance.py tools/check_rebuild_run.py tools/write_linux_toolchain_receipt.py tools/stage_windows_receipt.py tools/archive_cell.py
+      - run: python3 -m py_compile build-skia.py patches/apply_dawn_windows_arm64_vector_stl.py tools/skia_release_lock.py tools/matched_v8_link.py tools/release_asset_guard.py tools/check_windows_archive.py tools/check_linux_archive.py tools/write_windows_toolchain_provenance.py tools/apple_archive.py tools/write_legal_manifest.py tools/write_apple_toolchain_receipt.py tools/compare_archive_members.py tools/rebind_provenance.py tools/check_rebuild_run.py tools/write_linux_toolchain_receipt.py tools/stage_windows_receipt.py tools/archive_cell.py tools/check_attestation_bundle.py

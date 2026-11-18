@@ -301,6 +301,34 @@ class LinuxReceiptTests(unittest.TestCase):
         self.assertTrue(any("unknown architecture" in p for p in problems), problems)
         self.assertTrue(any("no known architecture to compare" in p for p in problems), problems)
 
+    def test_measured_fields_are_compared_with_the_archive(self):
+        archive = self.archive()
+        tampers = {
+            "observed.elf_machines": lambda r: r["observed"].__setitem__("elf_machines", ["arm64"]),
+            "archive name": lambda r: r["archive"].__setitem__("name", "skia-build-linux-arm64-gpu-release.zip"),
+            "target_triple": lambda r: r["compiler"].__setitem__("target_triple", "aarch64-linux-gnu"),
+            "cpp_abi": lambda r: r["cpp_abi"]["x64"].__setitem__("stdlib_version", "7"),
+        }
+        for label, tamper in tampers.items():
+            receipt = self.receipt(archive)
+            tamper(receipt)
+            with self.subTest(field=label):
+                self.assertTrue(linux_tool.validate_receipt(receipt, archive, **CELL))
+                self.assertEqual(linux_tool.main([str(self.staged(archive, receipt)), "--archive",
+                                                  str(archive), "--check", *CELL_ARGS]), 1)
+
+    def test_caller_cell_must_be_the_archive_names_cell(self):
+        archive = self.archive()
+        receipt = self.receipt(archive)
+        receipt["target"]["configuration"] = "Debug"
+        # Receipt and flags agree with each other, but not with the archive's name.
+        args = ["--arch", "x64", "--configuration", "Debug", "--variant", "gpu"]
+        self.assertEqual(linux_tool.main([str(self.staged(archive, receipt)), "--archive", str(archive),
+                                          "--check", *args]), 1)
+        self.assertTrue(linux_tool.flag_problems(archive.name, arch="x64", configuration="Debug",
+                                                 variant="gpu"))
+        self.assertEqual(linux_tool.flag_problems(archive.name, **CELL), [])
+
 
 class WindowsStagingTests(unittest.TestCase):
     CL = r"C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\cl.exe"
@@ -313,7 +341,8 @@ class WindowsStagingTests(unittest.TestCase):
                            "variant": "gpu"},
                 "producer": {"skia_gn_compiler": compiler, "dawn_cmake_compiler": compiler,
                              "msvc_toolset_version": toolset, "windows_sdk_version": "10.0.26100.0",
-                             "visual_studio_vc_dir": "x", "host_architecture": "AMD64"},
+                             "visual_studio_vc_dir": "x", "host_architecture": "AMD64",
+                             "skia_builder_ref": "e22740ed2852ebb3d5a801d6ac48b39788ed18bb"},
                 "runtime": {"abi": "msvc", "library": "static", "compile_flag": "/MT",
                             "consumer_requirement": f"MSVC STL/CRT toolset >= {toolset}"}}
 
@@ -463,6 +492,46 @@ class WindowsStagingTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 stage_tool.main(["--archive", str(archive), "--arch", "x64", "--configuration",
                                  "Release", "--check", str(path)])
+
+    def test_every_derived_staged_field_must_match_the_receipt_inside_the_archive(self):
+        tampers = {
+            "msvc_toolset": lambda r: r["msvc_toolset"].__setitem__("version", "14.29.30133"),
+            "windows_sdk": lambda r: r["windows_sdk"].__setitem__("version", "10.0.17763.0"),
+            "cpp_abi": lambda r: r["cpp_abi"]["x64"].__setitem__("stdlib_version", "14.29.30133"),
+            "compiler path": lambda r: r["compiler"]["cxx"].__setitem__("path", r"C:\evil\cl.exe"),
+            "compiler version": lambda r: r["compiler"]["cxx"].__setitem__("version", "totally a compiler"),
+            "linker path": lambda r: r["linker"].__setitem__("path", r"C:\evil\link.exe"),
+            "archiver vendor": lambda r: r["archiver"].__setitem__("vendor", "llvm"),
+            "linker toolset": lambda r: r["linker"].__setitem__(
+                "version", "Microsoft (R) Incremental Linker Version 14.29.30133.0"),
+        }
+        for label, tamper in tampers.items():
+            with self.subTest(field=label), tempfile.TemporaryDirectory() as temporary:
+                tmp = pathlib.Path(temporary)
+                archive = self.archive(tmp, self.receipt())
+                _, staged = self.stage(archive, tmp / "assets")
+                tamper(staged)
+                problems = stage_tool.problems_for(archive, staged, archive_receipt_bytes(archive),
+                                                    "x64", "Release", "gpu")
+                self.assertTrue(problems, label)
+                data = stage_tool.canonical_bytes(staged)
+                path = tmp / stage_tool.content_addressed_name(archive.name, data)
+                path.write_bytes(data)
+                self.assertEqual(self.check(archive, path), 1, label)
+
+    def test_caller_cell_must_be_the_archive_names_cell(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tmp = pathlib.Path(temporary)
+            source = self.receipt()
+            source["target"]["configuration"] = "Debug"
+            archive = self.archive(tmp, source)  # named ...-release.zip
+            source_bytes = archive_receipt_bytes(archive)
+            staged = stage_tool.derive(archive, source, source_bytes, "x64", "Debug", "gpu",
+                                       banner=lambda p: "Microsoft (R) Incremental Linker Version 14.44.35207.0"
+                                       if p.endswith("link.exe") else "Microsoft (R) Library Manager Version 14.44.35207.0",
+                                       hasher=lambda p: "cd" * 32)
+            problems = stage_tool.problems_for(archive, staged, source_bytes, "x64", "Debug", "gpu")
+            self.assertTrue(any(p.startswith("--check cell.configuration") for p in problems), problems)
 
 
 def archive_receipt_bytes(archive):

@@ -633,7 +633,8 @@ jobs:
             exit 1
           fi
           python3 tools/write_apple_toolchain_receipt.py "${receipts[0]}" --archive "$ARCHIVE" --check
-          python3 tools/write_legal_manifest.py "${manifests[0]}" --archive "$ARCHIVE" --check
+          python3 tools/write_legal_manifest.py "${manifests[0]}" --archive "$ARCHIVE" --check \
+            --expect-skia-revision "$SKIA_REVISION" --expect-dawn-revision "$DAWN_REVISION"
 
       - name: Prove Linux provenance assets
         if: steps.check.outputs.should_build == 'true' && matrix.platform == 'linux' && !inputs.test_mode
@@ -650,7 +651,8 @@ jobs:
           fi
           python3 tools/write_linux_toolchain_receipt.py "${receipts[0]}" --archive "$ARCHIVE" --check \
             --arch "${{ matrix.arch }}" --configuration "${{ matrix.config || 'Release' }}" --variant "${{ matrix.variant }}"
-          python3 tools/write_legal_manifest.py "${manifests[0]}" --archive "$ARCHIVE" --check
+          python3 tools/write_legal_manifest.py "${manifests[0]}" --archive "$ARCHIVE" --check \
+            --expect-skia-revision "$SKIA_REVISION" --expect-dawn-revision "$DAWN_REVISION"
 
       - name: Prove Windows provenance assets
         if: steps.check.outputs.should_build == 'true' && runner.os == 'Windows' && matrix.variant == 'gpu' && !inputs.test_mode
@@ -667,7 +669,8 @@ jobs:
           fi
           python tools/stage_windows_receipt.py --archive "$ARCHIVE" --arch "${{ matrix.arch }}" \
             --configuration "${{ matrix.config || 'Release' }}" --variant "${{ matrix.variant }}" --check "${receipts[0]}"
-          python tools/write_legal_manifest.py "${manifests[0]}" --archive "$ARCHIVE" --check
+          python tools/write_legal_manifest.py "${manifests[0]}" --archive "$ARCHIVE" --check \
+            --expect-skia-revision "$SKIA_REVISION" --expect-dawn-revision "$DAWN_REVISION"
 
 
   # The build jobs run Skia's DEPS-fetched third-party code, so none of them
@@ -781,6 +784,8 @@ jobs:
           path: cells
       - name: List the attested subjects
         id: subjects
+        env:
+          TEST_MODE: ${{ inputs.test_mode }}
         run: |
           set -euo pipefail
           # download-artifact unpacks a lone matching artifact straight into
@@ -788,7 +793,7 @@ jobs:
           # dispatch produces. Give it its own directory so the loop sees it.
           shopt -s nullglob
           lone=(cells/*.zip)
-          if [ ${#lone[@]} -eq 1 ] && [ -d cells/provenance-assets ]; then
+          if [ ${#lone[@]} -eq 1 ]; then
             name="$(basename "${lone[0]}" .zip)"
             mkdir -p "cells-lone/$name"
             mv cells/* "cells-lone/$name/"
@@ -805,18 +810,42 @@ jobs:
             exit 1
           fi
           : > subjects.sha256
+          missing=0
           for cell in cells/*/; do
-            [ -d "$cell/provenance-assets" ] || continue
             name="$(basename "$cell")"
             # Apple cells are attested by attest-apple.
-            case "$name" in skia-build-linux-*|skia-build-win-*|skia-build-wasm-*|skia-build-android-*) ;; *) continue ;; esac
-            (cd "$cell" && sha256sum "$name.zip" provenance-assets/*.json) | \
+            case "$name" in
+              skia-build-linux-*|skia-build-win-*) records=required ;;
+              # wasm and Android cells publish no records; their archive is
+              # still attested.
+              skia-build-wasm-*|skia-build-android-*) records=none ;;
+              *) continue ;;
+            esac
+            if [ "$TEST_MODE" = "true" ]; then
+              continue  # test-mode archives are placeholders and are never attested
+            fi
+            if [ ! -f "$cell/$name.zip" ]; then
+              echo "::error::$name has no $name.zip"
+              missing=1
+              continue
+            fi
+            if [ "$records" = required ] && [ ! -d "$cell/provenance-assets" ]; then
+              echo "::error::$name has no provenance records; a Linux or Windows archive is never published unattested"
+              missing=1
+              continue
+            fi
+            shopt -s nullglob
+            files=("$name.zip")
+            for record in "$cell"/provenance-assets/*.json; do files+=("provenance-assets/${record##*/}"); done
+            shopt -u nullglob
+            (cd "$cell" && sha256sum "${files[@]}") | \
               sed -E 's#  (provenance-assets/)?#  #' >> subjects.sha256
             echo "$name" >> cells.txt
           done
+          [ "$missing" = 0 ] || exit 1
           cat subjects.sha256
           if [ ! -s subjects.sha256 ]; then
-            echo "no Linux, Windows or wasm cell produced provenance records" >> "$GITHUB_STEP_SUMMARY"
+            echo "no Linux, Windows or wasm cell to attest" >> "$GITHUB_STEP_SUMMARY"
             echo "present=false" >> "$GITHUB_OUTPUT"
           else
             echo "present=true" >> "$GITHUB_OUTPUT"
@@ -1052,7 +1081,8 @@ jobs:
           fi
           python3 tools/write_linux_toolchain_receipt.py "${receipts[0]}" --archive "$ARCHIVE" --check \
             --arch x64 --configuration Release --variant gpu
-          python3 tools/write_legal_manifest.py "${manifests[0]}" --archive "$ARCHIVE" --check
+          python3 tools/write_legal_manifest.py "${manifests[0]}" --archive "$ARCHIVE" --check \
+            --expect-skia-revision "$SKIA_REVISION" --expect-dawn-revision "$DAWN_REVISION"
 
   create-xcframework:
     needs: build-skia
@@ -1260,8 +1290,11 @@ jobs:
   # gain the ARM64 artifact independently.
   publish-windows-arm64-backfill:
     if: ${{ !inputs.skip_release && inputs.platforms == 'win-arm64' && inputs.release_tag != '' && github.ref == 'refs/heads/main' }}
-    needs: [build-skia, attest-native]
+    needs: [resolve-skia, build-skia, attest-native]
     runs-on: ubuntu-24.04
+    env:
+      SKIA_REVISION: ${{ needs.resolve-skia.outputs.skia }}
+      DAWN_REVISION: ${{ needs.resolve-skia.outputs.dawn }}
     permissions:
       contents: write
     steps:
@@ -1295,7 +1328,9 @@ jobs:
           fi
           python3 src/tools/stage_windows_receipt.py --archive "$archive" --arch arm64 \
             --configuration Release --variant gpu --check "${receipts[0]}"
-          python3 src/tools/write_legal_manifest.py "${manifests[0]}" --archive "$archive" --check
+          python3 src/tools/check_attestation_bundle.py "${bundles[0]}" "$archive" "${receipts[0]}" "${manifests[0]}"
+          python3 src/tools/write_legal_manifest.py "${manifests[0]}" --archive "$archive" --check \
+            --expect-skia-revision "$SKIA_REVISION" --expect-dawn-revision "$DAWN_REVISION"
       # A first backfill uploads a new asset.  Re-running it is safe: identical
       # bytes are skipped, and a rebuild with different bytes is refused unless
       # replace_asset names the asset and replace_reason says why, in which
@@ -1323,8 +1358,11 @@ jobs:
   # attestation. The x64 cells build together, so both archives are published.
   publish-windows-x64-backfill:
     if: ${{ !inputs.skip_release && inputs.platforms == 'win-x64' && inputs.release_tag != '' && github.ref == 'refs/heads/main' }}
-    needs: [build-skia, attest-native]
+    needs: [resolve-skia, build-skia, attest-native]
     runs-on: ubuntu-24.04
+    env:
+      SKIA_REVISION: ${{ needs.resolve-skia.outputs.skia }}
+      DAWN_REVISION: ${{ needs.resolve-skia.outputs.dawn }}
     permissions:
       contents: write
     steps:
@@ -1364,7 +1402,10 @@ jobs:
             fi
             python3 src/tools/stage_windows_receipt.py --archive "artifact/$config/$name.zip" --arch x64 \
               --configuration "${config^}" --variant gpu --check "${receipts[0]}"
-            python3 src/tools/write_legal_manifest.py "${manifests[0]}" --archive "artifact/$config/$name.zip" --check
+            python3 src/tools/check_attestation_bundle.py "${bundles[0]}" "artifact/$config/$name.zip" \
+              "${receipts[0]}" "${manifests[0]}"
+            python3 src/tools/write_legal_manifest.py "${manifests[0]}" --archive "artifact/$config/$name.zip" --check \
+              --expect-skia-revision "$SKIA_REVISION" --expect-dawn-revision "$DAWN_REVISION"
           done
       - name: Publish Windows x64 assets to existing release
         env:
@@ -1396,8 +1437,11 @@ jobs:
   # replace_reason; the guard records both digests in the release notes.
   publish-linux-backfill:
     if: ${{ !inputs.skip_release && inputs.platforms == 'linux' && inputs.release_tag != '' && github.ref == 'refs/heads/main' }}
-    needs: [build-skia, portable-linux-x64, attest-native]
+    needs: [resolve-skia, build-skia, portable-linux-x64, attest-native]
     runs-on: ubuntu-24.04
+    env:
+      SKIA_REVISION: ${{ needs.resolve-skia.outputs.skia }}
+      DAWN_REVISION: ${{ needs.resolve-skia.outputs.dawn }}
     permissions:
       contents: write
     steps:
@@ -1437,7 +1481,10 @@ jobs:
             fi
             python3 src/tools/write_linux_toolchain_receipt.py "${receipts[0]}" --archive "artifact/$arch/$name.zip" --check \
               --arch "$arch" --configuration Release --variant gpu
-            python3 src/tools/write_legal_manifest.py "${manifests[0]}" --archive "artifact/$arch/$name.zip" --check
+            python3 src/tools/check_attestation_bundle.py "${bundles[0]}" "artifact/$arch/$name.zip" \
+              "${receipts[0]}" "${manifests[0]}"
+            python3 src/tools/write_legal_manifest.py "${manifests[0]}" --archive "artifact/$arch/$name.zip" --check \
+              --expect-skia-revision "$SKIA_REVISION" --expect-dawn-revision "$DAWN_REVISION"
           done
       - name: Publish Linux assets to existing release
         env:

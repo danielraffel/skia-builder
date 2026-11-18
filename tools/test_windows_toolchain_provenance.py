@@ -17,6 +17,7 @@ SPEC.loader.exec_module(MODULE)
 # The receipt published in chrome/m153's skia-build-win-arm64-gpu-release.zip
 # (sha256 18e57481...).  The writer ran outside a developer shell, so it
 # recorded "unknown" toolsets and clang-cl's no-argument error as a version.
+BUILDER_REF = "e22740ed2852ebb3d5a801d6ac48b39788ed18bb"
 BROKEN_M153 = ROOT / "tools" / "testdata" / "chrome-m153-win-arm64-msvc-toolchain.json"
 
 # What GitHub's windows-11-arm image actually used for that build (from the
@@ -71,6 +72,7 @@ class WindowsToolchainProvenanceTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
 
     def receipt(self, **kwargs):
+        kwargs.setdefault("builder_ref", BUILDER_REF)
         return MODULE.build_receipt("arm64", "Release", "gpu", vc_dir=self.layout.vc,
                                     win_sdk=self.layout.sdk, run=fake_run, **kwargs)
 
@@ -115,7 +117,8 @@ class WindowsToolchainProvenanceTests(unittest.TestCase):
 
     def test_unresolvable_toolchain_fails_validation(self):
         receipt = MODULE.build_receipt("arm64", "Release", "gpu", vc_dir=self.tmp / "missing",
-                                       win_sdk=self.tmp / "missing", run=fake_run)
+                                       win_sdk=self.tmp / "missing", builder_ref=BUILDER_REF,
+                                       run=fake_run)
         problems = MODULE.validate_receipt(receipt, "arm64", "Release", "gpu")
         self.assertTrue(any("msvc_toolset_version" in p for p in problems), problems)
         self.assertTrue(any("windows_sdk_version" in p for p in problems), problems)
@@ -188,11 +191,29 @@ class WindowsToolchainProvenanceTests(unittest.TestCase):
             with self.subTest(args=args), self.assertRaises(SystemExit):
                 MODULE.main([str(BROKEN_M153), *args, "--check"])
 
+    def test_builder_ref_is_required_by_writer_and_validator(self):
+        with self.assertRaises(ValueError):
+            self.receipt(builder_ref="")
+        for value in (None, "not-a-commit"):
+            receipt = self.receipt()
+            receipt["producer"]["skia_builder_ref"] = value
+            problems = MODULE.validate_receipt(receipt, "arm64", "Release", "gpu")
+            self.assertTrue(any("skia_builder_ref" in p for p in problems), (value, problems))
+        receipt = self.receipt()
+        del receipt["producer"]["skia_builder_ref"]
+        self.assertTrue(any("skia_builder_ref" in p for p in
+                            MODULE.validate_receipt(receipt, "arm64", "Release", "gpu")))
+        out = self.tmp / "msvc-toolchain.json"
+        with self.assertRaises(SystemExit):
+            MODULE.main([str(out), "--arch", "arm64", "--configuration", "Release", "--variant", "gpu"])
+        self.assertFalse(out.exists())
+
     def test_main_refuses_to_write_an_unprovable_receipt(self):
         out = self.tmp / "msvc-toolchain.json"
         with mock.patch.object(MODULE, "find_msvc", return_value=None), \
                 mock.patch.object(MODULE, "_run", fake_run):
-            code = MODULE.main([str(out), "--arch", "arm64", "--configuration", "Release", "--variant", "gpu"])
+            code = MODULE.main([str(out), "--arch", "arm64", "--configuration", "Release", "--variant", "gpu",
+                                "--builder-ref", BUILDER_REF])
         self.assertEqual(code, 1)
 
     def test_check_mode_rejects_the_published_receipt(self):

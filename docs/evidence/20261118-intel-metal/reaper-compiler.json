@@ -1,0 +1,41 @@
+{
+  "process" : "REAPER",
+  "device" : "Intel(R) UHD Graphics 630",
+  "results" : [
+    {
+      "default" : 65538,
+      "requested" : 0,
+      "effective" : 65538,
+      "compiled" : 0,
+      "error" : "program_source:3:26: error: no template named 'array'\nkernel void probe(device array<float,4>& a [[buffer(0)]]) { a[0]=1.0f; }\n                         ^\n"
+    },
+    {
+      "default" : 65538,
+      "requested" : 131074,
+      "effective" : 131074,
+      "compiled" : 1,
+      "error" : ""
+    },
+    {
+      "default" : 65538,
+      "requested" : 131075,
+      "effective" : 131075,
+      "compiled" : 1,
+      "error" : ""
+    },
+    {
+      "default" : 65538,
+      "requested" : 131076,
+      "effective" : 131076,
+      "compiled" : 1,
+      "error" : ""
+    },
+    {
+      "default" : 65538,
+      "requested" : 196608,
+      "effective" : 196608,
+      "compiled" : 1,
+      "error" : ""
+    }
+  ]
+}

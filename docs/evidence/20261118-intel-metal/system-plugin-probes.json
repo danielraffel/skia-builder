@@ -1,0 +1,71 @@
+[
+  {
+    "format": "vst3",
+    "executable": "/Library/Audio/Plug-Ins/VST3/Spectr.vst3/Contents/MacOS/Spectr",
+    "sha256": "b7a2bb0d9885f58d2307c9e1e524e9197e9dfeb3b1ce0d9bb9a923090decb423",
+    "pid": 95170,
+    "alive_at_capture": true,
+    "host_status": "fx=0\nname=VST3: Spectr (Pulp)\nident=/Library/Audio/Plug-Ins/VST3/Spectr.vst3<800463036{E0A3644343D1A08EC73C7FDCC7E5D370\nparams=212\nparam0_before=1.0\nparam0_after=0.37000000476837\neditor=shown\n",
+    "loaded_module_lines": [
+      "REAPER  95170 danielraffel  txt    REG                1,4  28090208            69444345 /Library/Audio/Plug-Ins/VST3/Spectr.vst3/Contents/MacOS/Spectr"
+    ],
+    "loaded_modules": [
+      {
+        "path": "/Library/Audio/Plug-Ins/VST3/Spectr.vst3/Contents/MacOS/Spectr",
+        "sha256": "b7a2bb0d9885f58d2307c9e1e524e9197e9dfeb3b1ce0d9bb9a923090decb423"
+      }
+    ],
+    "matches_expected_module": true,
+    "desktop_capture": {
+      "exit_code": 0,
+      "stderr": ""
+    },
+    "process_exit": -15
+  },
+  {
+    "format": "clap",
+    "executable": "/Library/Audio/Plug-Ins/CLAP/Spectr.clap/Contents/MacOS/Spectr",
+    "sha256": "be128920a51d43f266cbdbf682f9aef297c1e33d93c1ed4a415de0a59e9d603c",
+    "pid": 95397,
+    "alive_at_capture": true,
+    "host_status": "fx=0\nname=CLAP: Spectr (Pulp)\nident=com.pulp.spectr\nparams=212\nparam0_before=1.0\nparam0_after=1.0\neditor=shown\n",
+    "loaded_module_lines": [
+      "REAPER  95397 danielraffel  txt    REG                1,4  28146544            69444382 /Library/Audio/Plug-Ins/CLAP/Spectr.clap/Contents/MacOS/Spectr"
+    ],
+    "loaded_modules": [
+      {
+        "path": "/Library/Audio/Plug-Ins/CLAP/Spectr.clap/Contents/MacOS/Spectr",
+        "sha256": "be128920a51d43f266cbdbf682f9aef297c1e33d93c1ed4a415de0a59e9d603c"
+      }
+    ],
+    "matches_expected_module": true,
+    "desktop_capture": {
+      "exit_code": 0,
+      "stderr": ""
+    },
+    "process_exit": -15
+  },
+  {
+    "format": "au",
+    "executable": "/Library/Audio/Plug-Ins/Components/Spectr.component/Contents/MacOS/Spectr",
+    "sha256": "77cbc7d1116143017acc567a03c8fd40e590a14aff2465431b6a3c0df269cac9",
+    "pid": 95521,
+    "alive_at_capture": true,
+    "host_status": "fx=0\nname=AU: Spectr (Pulp)\nident=Pulp: Spectr\nparams=212\nparam0_before=1.0\nparam0_after=0.37\neditor=shown\n",
+    "loaded_module_lines": [
+      "REAPER  95521 danielraffel  txt    REG                1,4  28012288            69444306 /Library/Audio/Plug-Ins/Components/Spectr.component/Contents/MacOS/Spectr"
+    ],
+    "loaded_modules": [
+      {
+        "path": "/Library/Audio/Plug-Ins/Components/Spectr.component/Contents/MacOS/Spectr",
+        "sha256": "77cbc7d1116143017acc567a03c8fd40e590a14aff2465431b6a3c0df269cac9"
+      }
+    ],
+    "matches_expected_module": true,
+    "desktop_capture": {
+      "exit_code": 0,
+      "stderr": ""
+    },
+    "process_exit": -15
+  }
+]

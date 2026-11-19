@@ -235,12 +235,37 @@ jobs:
         with:
           python-version: '3.x'
 
+      # Android builds with the NDK revision Pulp pins (30.0.14904198, which
+      # Google publishes as android-ndk-r30-beta1), downloaded from Google and
+      # checked against the sha1 in Google's repository manifest, then against
+      # its own source.properties. It goes in RUNNER_TEMP: the free-disk step
+      # above removes the image's preinstalled SDK.
+      - name: Install Android NDK
+        if: steps.check.outputs.should_build == 'true' && matrix.platform == 'android'
+        shell: bash
+        env:
+          NDK_REVISION: "30.0.14904198"
+          NDK_ZIP: android-ndk-r30-beta1-linux.zip
+          NDK_SHA1: 26b746e5a1e7ac3371f2a862a2f52a7c0740aa8a
+        run: |
+          set -euo pipefail
+          curl --fail --show-error --location --retry 5 --retry-all-errors \
+            "https://dl.google.com/android/repository/${NDK_ZIP}" -o "${RUNNER_TEMP}/${NDK_ZIP}"
+          echo "${NDK_SHA1}  ${RUNNER_TEMP}/${NDK_ZIP}" | sha1sum -c -
+          mkdir -p "${RUNNER_TEMP}/ndk"
+          unzip -q "${RUNNER_TEMP}/${NDK_ZIP}" -d "${RUNNER_TEMP}/ndk"
+          rm -f "${RUNNER_TEMP}/${NDK_ZIP}"
+          ndk="$(echo "${RUNNER_TEMP}"/ndk/android-ndk-*)"
+          grep -Eq "^Pkg.Revision = ${NDK_REVISION//./\\.}(-beta1)?$" "$ndk/source.properties"
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+          "$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version
+
       - name: Set Git default branch
         if: steps.check.outputs.should_build == 'true'
         run: git config --global init.defaultBranch main
 
       - name: Install LLVM and Clang (Linux)
-        if: steps.check.outputs.should_build == 'true' && runner.os == 'Linux'
+        if: steps.check.outputs.should_build == 'true' && runner.os == 'Linux' && matrix.platform != 'android'
         shell: bash
         run: |
           set -euo pipefail
@@ -455,18 +480,30 @@ jobs:
         if: steps.check.outputs.should_build == 'true' && inputs.test_mode
         shell: bash
         run: |
+          # Same directory the Package step selects: Android x86_64 stages in
+          # android-gpu-x86_64/, every other cell in <platform>-<variant>/.
+          DUMMY_DIR="build/${{ matrix.platform }}-${{ matrix.variant }}"
+          if [ "${{ matrix.platform }}" = android ] && [ "${{ matrix.arch }}" = x86_64 ]; then
+            DUMMY_DIR="${DUMMY_DIR}-x86_64"
+          fi
           mkdir -p build/include
-          mkdir -p build/${{ matrix.platform }}-${{ matrix.variant }}
+          mkdir -p "$DUMMY_DIR"
           echo "Test file" > build/include/test.h
-          echo "Test lib" > build/${{ matrix.platform }}-${{ matrix.variant }}/test.lib
-          echo "GN args summary" > build/${{ matrix.platform }}-${{ matrix.variant }}/gn_args.txt
+          echo "Test lib" > "$DUMMY_DIR/test.lib"
+          echo "GN args summary" > "$DUMMY_DIR/gn_args.txt"
 
       - name: Package binaries
         if: steps.check.outputs.should_build == 'true'
         shell: bash
         run: |
           # Include share directory if it exists (contains icudtl.dat for ICU)
-          PACKAGE_PATHS=(build/include "build/${{ matrix.platform }}-${{ matrix.variant }}")
+          PACKAGE_DIR="build/${{ matrix.platform }}-${{ matrix.variant }}"
+          # The arm64-v8a archive is the canonical android-gpu/ (what Pulp's
+          # FindSkia reads by default); x86_64 stages in android-gpu-x86_64/.
+          if [ "${{ matrix.platform }}" = android ] && [ "${{ matrix.arch }}" = x86_64 ]; then
+            PACKAGE_DIR="${PACKAGE_DIR}-x86_64"
+          fi
+          PACKAGE_PATHS=(build/include "$PACKAGE_DIR")
           if [ -d "build/share" ]; then
             PACKAGE_PATHS+=(build/share)
           fi
@@ -481,6 +518,14 @@ jobs:
         if: steps.check.outputs.should_build == 'true' && matrix.platform == 'linux' && !inputs.test_mode
         shell: bash
         run: python3 tools/check_linux_archive.py "${{ steps.archive.outputs.name }}.zip"
+
+      - name: Check Android archive links without BackupRefPtr
+        if: steps.check.outputs.should_build == 'true' && matrix.platform == 'android' && !inputs.test_mode
+        shell: bash
+        run: |
+          : "${ANDROID_NDK_HOME:?ANDROID_NDK_HOME is not set}"
+          export NM="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          python3 tools/check_linux_archive.py "${{ steps.archive.outputs.name }}.zip"
 
       - name: Smoke-check Windows archive
         if: steps.check.outputs.should_build == 'true' && runner.os == 'Windows' && matrix.variant == 'gpu' && !inputs.test_mode
@@ -513,6 +558,30 @@ jobs:
           python3 tools/write_legal_manifest.py provenance/legal-manifest.json \
             --archive "$ARCHIVE" --source-root build/src/skia --out-dir "$ARCH=$dir" \
             --platform linux --variant "$VARIANT" --configuration "$CONFIG" \
+            --expect-skia-revision "$SKIA_REVISION" --expect-dawn-revision "$DAWN_REVISION" \
+            --content-addressed-dir provenance-assets || status=1
+          echo "provenance_status=$status" >> "$GITHUB_ENV"
+          ls -la provenance provenance-assets
+
+      - name: Write Android legal manifest and toolchain receipt
+        if: steps.check.outputs.should_build == 'true' && matrix.platform == 'android' && !inputs.test_mode
+        shell: bash
+        run: |
+          set -uo pipefail
+          CONFIG="${{ matrix.config || 'Release' }}"
+          ARCH="${{ matrix.arch }}"
+          VARIANT="${{ matrix.variant }}"
+          ARCHIVE="${{ steps.archive.outputs.name }}.zip"
+          dir="build/tmp/skia/android_${CONFIG}_${ARCH}_${VARIANT}"
+          mkdir -p provenance provenance-assets
+          status=0
+          python3 tools/write_ndk_toolchain_receipt.py provenance/ndk-toolchain.json \
+            --archive "$ARCHIVE" --abi "$ARCH" --api-level 26 --configuration "$CONFIG" \
+            --variant "$VARIANT" --toolchain-ninja "$dir/toolchain.ninja" \
+            --content-addressed-dir provenance-assets || status=1
+          python3 tools/write_legal_manifest.py provenance/legal-manifest.json \
+            --archive "$ARCHIVE" --source-root build/src/skia --out-dir "$ARCH=$dir" \
+            --platform android --variant "$VARIANT" --configuration "$CONFIG" \
             --expect-skia-revision "$SKIA_REVISION" --expect-dawn-revision "$DAWN_REVISION" \
             --content-addressed-dir provenance-assets || status=1
           echo "provenance_status=$status" >> "$GITHUB_ENV"
@@ -633,6 +702,24 @@ jobs:
           fi
           python3 tools/write_linux_toolchain_receipt.py "${receipts[0]}" --archive "$ARCHIVE" --check \
             --arch "${{ matrix.arch }}" --configuration "${{ matrix.config || 'Release' }}" --variant "${{ matrix.variant }}"
+          python3 tools/write_legal_manifest.py "${manifests[0]}" --archive "$ARCHIVE" --check \
+            --expect-skia-revision "$SKIA_REVISION" --expect-dawn-revision "$DAWN_REVISION"
+
+      - name: Prove Android provenance assets
+        if: steps.check.outputs.should_build == 'true' && matrix.platform == 'android' && !inputs.test_mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="${{ steps.archive.outputs.name }}.zip"
+          shopt -s nullglob
+          receipts=(provenance-assets/*.ndk-toolchain.sha256-*.json)
+          manifests=(provenance-assets/*.legal-manifest.sha256-*.json)
+          if [ "${provenance_status:-1}" != 0 ] || [ ${#receipts[@]} -ne 1 ] || [ ${#manifests[@]} -ne 1 ]; then
+            echo "::error::the toolchain receipt or legal manifest does not prove what it claims; see the ${{ steps.archive.outputs.name }}-provenance artifact"
+            exit 1
+          fi
+          python3 tools/write_ndk_toolchain_receipt.py "${receipts[0]}" --archive "$ARCHIVE" --check \
+            --abi "${{ matrix.arch }}" --configuration "${{ matrix.config || 'Release' }}" --variant "${{ matrix.variant }}"
           python3 tools/write_legal_manifest.py "${manifests[0]}" --archive "$ARCHIVE" --check \
             --expect-skia-revision "$SKIA_REVISION" --expect-dawn-revision "$DAWN_REVISION"
 
@@ -797,10 +884,9 @@ jobs:
             name="$(basename "$cell")"
             # Apple cells are attested by attest-apple.
             case "$name" in
-              skia-build-linux-*|skia-build-win-*) records=required ;;
-              # wasm and Android cells publish no records; their archive is
-              # still attested.
-              skia-build-wasm-*|skia-build-android-*) records=none ;;
+              skia-build-linux-*|skia-build-win-*|skia-build-android-*) records=required ;;
+              # wasm cells publish no records; their archive is still attested.
+              skia-build-wasm-*) records=none ;;
               *) continue ;;
             esac
             if [ "$TEST_MODE" = "true" ]; then
@@ -812,7 +898,7 @@ jobs:
               continue
             fi
             if [ "$records" = required ] && [ ! -d "$cell/provenance-assets" ]; then
-              echo "::error::$name has no provenance records; a Linux or Windows archive is never published unattested"
+              echo "::error::$name has no provenance records; a Linux, Windows or Android archive is never published unattested"
               missing=1
               continue
             fi
@@ -1251,6 +1337,8 @@ jobs:
             ./skia-build-linux-x64-gpu-release/skia-build-linux-x64-gpu-release.zip
             ./skia-build-linux-arm64-gpu-release/skia-build-linux-arm64-gpu-release.zip
             ./skia-build-wasm-wasm32-gpu-release/skia-build-wasm-wasm32-gpu-release.zip
+            ./skia-build-android-arm64-v8a-gpu-release/skia-build-android-arm64-v8a-gpu-release.zip
+            ./skia-build-android-x86_64-gpu-release/skia-build-android-x86_64-gpu-release.zip
             ./Skia.xcframework/Skia.xcframework.zip
             ./skia-release-lock/skia-release-lock.json
             ./skia-build-*/provenance-assets/*.json

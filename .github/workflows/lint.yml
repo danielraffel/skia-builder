@@ -46,6 +46,8 @@ on:
       - 'tools/check_attestation_bundle.py'
       - 'tools/test_check_attestation_bundle.py'
       - 'tools/test_native_provenance.py'
+      - 'tools/write_ndk_toolchain_receipt.py'
+      - 'tools/test_ndk_receipt.py'
       - 'tools/release_tag.py'
       - 'tools/test_release_tag.py'
       - 'tools/test_patch_script_platforms.py'
@@ -126,6 +128,7 @@ jobs:
       # Linux and Windows archives publish the same records; the receipts and the
       # non-Mach-O archive reader are tested on fixtures.
       - run: python3 tools/test_native_provenance.py
+      - run: python3 tools/test_ndk_receipt.py
       - run: python3 tools/test_check_attestation_bundle.py
       # A release_tag other than the branch tag must be the attested re-cut form.
       - run: python3 tools/test_release_tag.py

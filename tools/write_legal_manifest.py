@@ -148,9 +148,16 @@ class BuildGraph:
 
     def __init__(self, source_root: Path, out_dirs: dict[str, Path], ninja: str,
                  runner: Runner = run_tool, builder_root: Path | None = None,
-                 toolchain_roots: list[Path] | None = None):
+                 toolchain_roots: list[Path] | None = None,
+                 redistributed_roots: dict[str, Path] | None = None):
         self.source_root = Path(os.path.realpath(source_root))
         self.toolchain_roots = [Path(os.path.realpath(root)) for root in (toolchain_roots or [])]
+        # Sources that live inside a toolchain but are compiled into the
+        # package (the NDK's cpufeatures).  Each is recorded under its label
+        # with the license files of its own directory tree, and is checked
+        # before the toolchain roots that contain it.
+        self.redistributed_roots = {label: Path(os.path.realpath(root))
+                                    for label, root in sorted((redistributed_roots or {}).items())}
         self._real: dict[tuple[Path, str], str] = {}
         self.out_dirs = {arch: Path(os.path.realpath(path)) for arch, path in out_dirs.items()}
         self.builder_root = Path(os.path.realpath(builder_root)) if builder_root else None
@@ -265,6 +272,26 @@ class BuildGraph:
         self._license_cache[directory] = found
         return found
 
+    def redistributed_license_for(self, label: str, root: Path, directory: Path) -> list[str]:
+        """License ids for ``directory`` inside a redistributed root, bounded by that root."""
+        while self._relative(directory, root) is not None:
+            names = [name for name in self._entries(directory)
+                     if LICENSE_NAME_RE.match(name) and (directory / name).is_file()]
+            if names:
+                found = []
+                for name in names:
+                    path = directory / name
+                    license_id = f"{label}:{self._relative(path, root)}"
+                    if license_id not in self.licenses:
+                        text = path.read_bytes().decode("utf-8", errors="replace")
+                        self.licenses[license_id] = {"sha256": sha256_file(path), "text": text}
+                    found.append(license_id)
+                return found
+            if directory == root:
+                break
+            directory = directory.parent
+        return []
+
     def builder_license(self) -> list[str]:
         if not self.builder_root:
             return []
@@ -309,6 +336,10 @@ class BuildGraph:
             rel = self._relative(path, out_dir)
             if rel is not None:
                 return f"generated:{arch}:{rel}"
+        for label, root in self.redistributed_roots.items():
+            rel = self._relative(path, root)
+            if rel is not None:
+                return f"{label}:{rel}"
         return f"toolchain:{raw}"
 
     def mirrored_source_dir(self, path: Path) -> Path | None:
@@ -359,6 +390,23 @@ class BuildGraph:
                 }
                 if not licenses:
                     self.gaps.append({"kind": "generated-without-license", "path": file_id})
+            return file_id
+        for label, root in self.redistributed_roots.items():
+            rel = self._relative(path, root)
+            if rel is None:
+                continue
+            file_id = f"{label}:{rel}"
+            if file_id not in self.files:
+                licenses = self.redistributed_license_for(label, root, path.parent)
+                self.files[file_id] = {
+                    "sha256": sha256_file(path) if path.is_file() else None,
+                    "licenses": licenses,
+                    "redistributed_from": label,
+                }
+                if not licenses:
+                    self.gaps.append({"kind": "source-without-license", "path": file_id})
+                if not path.is_file():
+                    self.gaps.append({"kind": "source-missing", "path": file_id})
             return file_id
         if not any(self._relative(path, root) is not None for root in self.toolchain_roots):
             gap = {"kind": "input-outside-known-roots", "path": raw}
@@ -663,6 +711,18 @@ def validate_manifest(manifest: dict, archive: Path | None = None) -> list[str]:
 
 # ------------------------------------------------------------------ main ----
 
+def default_redistributed_roots(platform_name: str = "") -> dict[str, Path]:
+    """Toolchain directories whose sources are compiled into the package.
+
+    Skia's Android build compiles the NDK's ``sources/android/cpufeatures``
+    into its libraries, so that directory (and its NOTICE) is attributed like
+    any other source rather than treated as a toolchain header.
+    """
+    if platform_name == "android" and os.environ.get("ANDROID_NDK_HOME"):
+        return {"ndk-cpufeatures": Path(os.environ["ANDROID_NDK_HOME"]) / "sources" / "android" / "cpufeatures"}
+    return {}
+
+
 def default_toolchain_roots(platform_name: str = "") -> list[Path]:
     """Directories whose headers are toolchain inputs, not sources this build redistributes.
 
@@ -674,6 +734,12 @@ def default_toolchain_roots(platform_name: str = "") -> list[Path]:
     if platform_name == "linux":
         roots = [Path("/usr"), Path("/opt"), Path("/lib"), Path("/etc")]
         for variable in ("LLVM_PATH", "RUNNER_TOOL_CACHE"):
+            if os.environ.get(variable):
+                roots.append(Path(os.environ[variable]))
+        return roots
+    if platform_name == "android":
+        roots = [Path("/usr"), Path("/opt")]
+        for variable in ("ANDROID_NDK_HOME", "RUNNER_TEMP"):
             if os.environ.get(variable):
                 roots.append(Path(os.environ[variable]))
         return roots
@@ -780,7 +846,8 @@ def main(argv: list[str] | None = None) -> int:
     if not Path(gn).exists():
         gn = None
     graph = BuildGraph(args.source_root, out_dirs, args.ninja, builder_root=args.builder_root,
-                       toolchain_roots=args.toolchain_root or default_toolchain_roots(args.platform))
+                       toolchain_roots=args.toolchain_root or default_toolchain_roots(args.platform),
+                       redistributed_roots=default_redistributed_roots(args.platform))
     cell = {"platform": args.platform, "variant": args.variant,
             "configuration": args.configuration, "architectures": sorted(out_dirs),
             **({"target": args.target} if args.target else {})}

@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -233,6 +234,48 @@ class LegalManifestTests(unittest.TestCase):
         self.assertEqual(len(matches), 1)
         self.assertEqual(matches[0][0], "arm64")
         self.assertTrue(graph.sources[manifest_tool.os.path.realpath(matches[0][1])])
+
+    def ndk_cpufeatures_package(self):
+        """Compile a source from inside a toolchain root into libskia.a, as the NDK's cpufeatures is."""
+        ndk = self.tmp / "ndk"
+        cpufeatures = ndk / "sources" / "android" / "cpufeatures"
+        cpufeatures.mkdir(parents=True)
+        (cpufeatures / "NOTICE").write_text("Android BSD\n")
+        (cpufeatures / "cpu-features.c").write_text("int cpu_features(void) { return 3; }\n")
+        ninja = (self.out / "build.ninja").read_text().replace(
+            "build libskia.a: alink obj/core.o obj/inflate.o\n",
+            f"build obj/cpu-features.o: cc {cpufeatures / 'cpu-features.c'}\n"
+            "build libskia.a: alink obj/core.o obj/inflate.o obj/cpu-features.o\n")
+        (self.out / "build.ninja").write_text(ninja)
+        subprocess.run(["ninja", "-C", str(self.out)], check=True, capture_output=True)
+        return ndk, cpufeatures, self.package()
+
+    def test_a_redistributed_toolchain_source_is_attributed_to_its_own_notice(self):
+        ndk, cpufeatures, archive = self.ndk_cpufeatures_package()
+        roots = [*manifest_tool.default_toolchain_roots(), ndk]
+        graph = manifest_tool.BuildGraph(self.src, {"arm64": self.out}, "ninja",
+                                         builder_root=self.builder, toolchain_roots=roots,
+                                         redistributed_roots={"ndk-cpufeatures": cpufeatures})
+        manifest = manifest_tool.build_manifest(archive, graph, {"platform": "android"}, gn=None)
+        self.assertEqual(manifest["gaps"], [])
+        self.assertEqual(manifest["files"]["ndk-cpufeatures:cpu-features.c"]["licenses"],
+                         ["ndk-cpufeatures:NOTICE"])
+        self.assertEqual(manifest["licenses"]["ndk-cpufeatures:NOTICE"]["text"], "Android BSD\n")
+
+    def test_without_its_redistributed_root_the_toolchain_source_is_a_gap(self):
+        ndk, _cpufeatures, archive = self.ndk_cpufeatures_package()
+        roots = [*manifest_tool.default_toolchain_roots(), ndk]
+        graph = manifest_tool.BuildGraph(self.src, {"arm64": self.out}, "ninja",
+                                         builder_root=self.builder, toolchain_roots=roots)
+        manifest = manifest_tool.build_manifest(archive, graph, {"platform": "android"}, gn=None)
+        self.assertEqual([gap["kind"] for gap in manifest["gaps"]], ["object-without-license"])
+        self.assertFalse(manifest["exhaustive"])
+
+    def test_android_redistributes_only_the_ndk_cpufeatures(self):
+        with mock.patch.dict(manifest_tool.os.environ, {"ANDROID_NDK_HOME": "/ndk"}):
+            self.assertEqual(manifest_tool.default_redistributed_roots("android"),
+                             {"ndk-cpufeatures": pathlib.Path("/ndk/sources/android/cpufeatures")})
+            self.assertEqual(manifest_tool.default_redistributed_roots("linux"), {})
 
     def test_records_the_exact_skia_and_dawn_checkouts(self):
         manifest = self.manifest(self.package(), expected=dict(self.commits))
@@ -564,6 +607,21 @@ class ArchiveCellTests(unittest.TestCase):
             "skia-build-mac-arm64-gpu-release.zip",
             {"platform": "mac", "target": "simulator", "architectures": ["arm64"],
              "variant": "gpu", "configuration": "Release"}, label="cell"))
+
+    def test_android_names_carry_one_abi(self):
+        for abi in ("arm64-v8a", "x86_64"):
+            name = f"skia-build-android-{abi}-gpu-release.zip"
+            self.assertEqual(archive_cell.cell_for_archive(name),
+                             {"platform": "android", "target": "", "architectures": [abi],
+                              "variant": "gpu", "configuration": "Release"})
+            cell = {"platform": "android", "architectures": [abi], "variant": "gpu",
+                    "configuration": "Release"}
+            self.assertEqual(archive_cell.cell_problems(name, cell, label="cell"), [])
+        for name in ("skia-build-android-arm64-gpu-release.zip",
+                     "skia-build-android-arm64-v8a-x86_64-gpu-release.zip",
+                     "skia-build-android-device-arm64-v8a-gpu-release.zip"):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                archive_cell.cell_for_archive(name)
 
     def test_an_unknown_name_fails_closed(self):
         for name in ("other.zip", "skia-build-linux-riscv64-gpu-release.zip",

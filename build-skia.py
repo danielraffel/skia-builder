@@ -102,6 +102,11 @@ LINUX_LIB_DIR = BASE_DIR / "linux" / "lib"
 MAC_MIN_VERSION = os.environ.get("MAC_DEPLOYMENT_TARGET") or "13.0"
 IOS_MIN_VERSION = "14.0"  # Dawn requires iOS 14.0+ for C++ atomic wait/notify
 VISIONOS_MIN_VERSION = "1.0"
+# Android: the NDK revision Pulp builds against and the minimum API level
+# Skia/Dawn target (Pulp's build-skia-android.sh used the same ndk_api).
+ANDROID_NDK_REVISION = "30.0.14904198"
+ANDROID_NDK_API = 26
+ANDROID_ABI_CPU = {"arm64-v8a": "arm64", "x86_64": "x64"}
 
 # Unicode backend configuration
 USE_LIBGRAPHEME = False  # Set to True to use libgrapheme instead of ICU
@@ -155,6 +160,64 @@ LIBS = {
     ]
 }
 
+# Android GN args, taken from Pulp's tools/build-skia-android.sh (Graphite on
+# Dawn/Vulkan), so the archive matches the one Pulp's Android CI is tested
+# against. Only target_cpu and ndk are filled in per cell. Android does NOT use
+# BASIC_GN_ARGS / RELEASE_GN_ARGS / the platform tables above.
+#
+# One line differs from Pulp's script: skia_use_partition_alloc = false. With
+# PartitionAlloc on, libskia.a references four RawPtrBackupRefImpl symbols that
+# none of the packaged libraries define (Pulp's script stages libraw_ptr.a and
+# liballocator_*.a, which Pulp's FindSkia then drops on Android). Off, raw_ptr
+# is a plain pointer and the archive passes tools/check_linux_archive.py, as
+# the Linux archives do.
+ANDROID_GN_ARGS = f"""
+target_os = "android"
+target_cpu = "{{cpu}}"
+is_official_build = true
+is_debug = false
+
+skia_enable_graphite = true
+skia_use_dawn = true
+skia_use_vulkan = true
+
+skia_use_harfbuzz = true
+skia_use_icu = true
+skia_enable_paragraph = true
+
+skia_enable_svg = true
+skia_enable_skottie = true
+
+skia_use_gl = false
+skia_use_metal = false
+skia_use_direct3d = false
+
+skia_use_system_freetype2 = false
+skia_use_system_harfbuzz = false
+skia_use_system_icu = false
+skia_use_system_expat = false
+skia_use_system_zlib = false
+skia_use_system_libpng = false
+skia_use_system_libwebp = false
+skia_use_system_libjpeg_turbo = false
+skia_use_freetype = true
+skia_use_expat = true
+skia_use_libpng_decode = true
+skia_use_libpng_encode = true
+skia_use_zlib = true
+
+ndk = "{{ndk}}"
+ndk_api = {ANDROID_NDK_API}
+
+skia_enable_pdf = false
+skia_enable_sksl = true
+
+skia_use_partition_alloc = false
+"""
+
+# Android builds the same library set as Linux.
+LIBS["android"] = list(LIBS["linux"])
+
 # Additional libraries for GPU variant (Dawn)
 GPU_LIBS = {
     "mac": ["libdawn_combined.a"],
@@ -163,6 +226,7 @@ GPU_LIBS = {
     "win": ["dawn_combined.lib"],
     "wasm": [],  # WASM uses browser WebGPU
     "linux": ["libdawn_combined.a"],
+    "android": ["libdawn_combined.a"],
 }
 
 # Source patches are scoped to the platform slices that need them. Windows
@@ -454,7 +518,7 @@ class SkiaBuildScript:
 
     def parse_arguments(self):
         parser = argparse.ArgumentParser(description="Build Skia for macOS, iOS, visionOS, Windows, Linux and WebAssembly")
-        parser.add_argument("platform", choices=["mac", "ios", "visionos", "win", "linux", "wasm", "xcframework"],
+        parser.add_argument("platform", choices=["mac", "ios", "visionos", "win", "linux", "wasm", "android", "xcframework"],
                            help="Target platform or xcframework")
         parser.add_argument("-config", choices=["Debug", "Release"], default="Release", help="Build configuration")
         parser.add_argument("-archs", help="Target architectures (comma-separated)")
@@ -508,6 +572,8 @@ class SkiaBuildScript:
             return ["x64"]
         elif self.platform == "wasm":
             return ["wasm32"]  # WebAssembly has only one architecture
+        elif self.platform == "android":
+            return ["arm64-v8a"]
 
     def validate_archs(self):
         valid_archs = {
@@ -516,6 +582,7 @@ class SkiaBuildScript:
             "visionos": ["arm64"],
             "win": ["x64", "arm64", "arm64ec", "Win32"],
             "linux": ["x64", "arm64"],
+            "android": ["arm64-v8a", "x86_64"],
             "wasm": ["wasm32"]
         }
         for arch in self.archs:
@@ -523,7 +590,7 @@ class SkiaBuildScript:
                 colored_print(f"Invalid architecture for {self.platform}: {arch}", Colors.FAIL)
                 sys.exit(1)
 
-    def get_lib_dir(self, platform):
+    def get_lib_dir(self, platform, arch=None):
         """Get the library directory for a platform, including variant suffix."""
         variant_suffix = f"-{self.variant}"
         if platform == "mac":
@@ -536,6 +603,12 @@ class SkiaBuildScript:
             return BASE_DIR / f"wasm{variant_suffix}" / "lib"
         elif platform == "linux":
             return BASE_DIR / f"linux{variant_suffix}" / "lib"
+        elif platform == "android":
+            # arm64-v8a is the canonical android-gpu/ (what Pulp's FindSkia
+            # reads by default); x86_64 stages beside it in android-gpu-x86_64/.
+            selected_arch = arch if arch is not None else (self.archs[0] if self.archs else "")
+            abi = "-x86_64" if selected_arch == "x86_64" else ""
+            return BASE_DIR / f"android{variant_suffix}{abi}" / "lib"
         else:  # Windows
             return BASE_DIR / f"win{variant_suffix}" / "lib"
 
@@ -610,6 +683,9 @@ class SkiaBuildScript:
 
     def generate_gn_args(self, arch: str):
         output_dir = TMP_DIR / f"{self.platform}_{self.config}_{arch}_{self.variant}"
+        if self.platform == "android":
+            self.generate_android_gn_args(arch, output_dir)
+            return
         gn_args = BASIC_GN_ARGS
 
         # Use CPU or GPU platform-specific args based on variant
@@ -779,6 +855,30 @@ class SkiaBuildScript:
 
         subprocess.run(["./bin/gn", "gen", str(output_dir), f"--args={gn_args}"], check=True)
 
+    def generate_android_gn_args(self, arch: str, output_dir: Path):
+        ndk = os.environ.get("ANDROID_NDK_HOME", "")
+        revision = ""
+        try:
+            for line in (Path(ndk) / "source.properties").read_text().splitlines():
+                if line.startswith("Pkg.Revision"):
+                    revision = line.split("=", 1)[1].strip()
+        except OSError:
+            pass
+        # A preview NDK reports "30.0.14904198-beta1". Accept exactly the pinned
+        # revision and its known beta1 suffix, the same set the receipt checker
+        # (tools/write_ndk_toolchain_receipt.py PINNED_PKG_REVISIONS) accepts.
+        if revision not in (ANDROID_NDK_REVISION, f"{ANDROID_NDK_REVISION}-beta1"):
+            colored_print(f"ANDROID_NDK_HOME={ndk!r} is NDK {revision or 'unknown'}, "
+                          f"expected {ANDROID_NDK_REVISION}", Colors.FAIL)
+            sys.exit(1)
+        gn_args = ANDROID_GN_ARGS.format(cpu=ANDROID_ABI_CPU[arch], ndk=ndk)
+        # ccache only speeds compiles up; it does not change the objects.
+        if shutil.which("ccache"):
+            gn_args += '\ncc_wrapper = "ccache"\n'
+        colored_print(f"Generating gn args for android {arch}:", Colors.OKBLUE)
+        colored_print(gn_args, Colors.OKGREEN)
+        subprocess.run(["./bin/gn", "gen", str(output_dir), f"--args={gn_args}"], check=True)
+
     def build_skia(self, arch: str):
         output_dir = TMP_DIR / f"{self.platform}_{self.config}_{arch}_{self.variant}"
         
@@ -814,7 +914,7 @@ class SkiaBuildScript:
 
     def move_libs(self, arch: str):
         src_dir = TMP_DIR / f"{self.platform}_{self.config}_{arch}_{self.variant}"
-        lib_dir = self.get_lib_dir(self.platform)
+        lib_dir = self.get_lib_dir(self.platform, arch)
         if self.platform == "mac":
             dest_dir = lib_dir / self.config / (arch if arch != "universal" else "")
         elif self.platform == "ios":
@@ -828,7 +928,7 @@ class SkiaBuildScript:
             is_simulator = (self.target == "simulator")
             target_prefix = "simulator" if is_simulator else "device"
             dest_dir = lib_dir / self.config / f"{target_prefix}-{arch}"
-        elif self.platform == "wasm":
+        elif self.platform in ("wasm", "android"):
             dest_dir = lib_dir / self.config
         else:  # Windows, Linux
             dest_dir = lib_dir / self.config / arch
@@ -1295,12 +1395,14 @@ class SkiaBuildScript:
             colored_print(f"Warning: Failed to download GN: {e}", Colors.WARNING)
 
     def generate_gn_args_summary(self, arch: str):
+        if self.platform == "android":
+            return ANDROID_GN_ARGS.format(cpu=ANDROID_ABI_CPU[arch], ndk="$ANDROID_NDK_HOME").strip()
         if self.variant == "cpu":
             gn_args = BASIC_GN_ARGS + PLATFORM_GN_ARGS_CPU[self.platform] + CPU_ONLY_GN_ARGS
         else:
             gn_args = BASIC_GN_ARGS + PLATFORM_GN_ARGS[self.platform]
         gn_args += RELEASE_GN_ARGS
-        target_cpu = arch
+        target_cpu = ANDROID_ABI_CPU[arch] if self.platform == "android" else arch
         if self.platform == "win":
             # ARM64EC uses GN's ARM64 source/toolchain selection.  The EC ABI
             # is selected by the explicit compiler/linker flags below and the

@@ -179,7 +179,8 @@ class AttestNativeSubjectsTest(AttestSubjectsTest):
 
     def test_a_linux_or_windows_cell_without_records_fails(self) -> None:
         for layout in ("lone", "several"):
-            for name in ("skia-build-win-arm64-gpu-release", "skia-build-linux-x64-gpu-release"):
+            for name in ("skia-build-win-arm64-gpu-release", "skia-build-linux-x64-gpu-release",
+                         "skia-build-android-arm64-v8a-gpu-release"):
                 with self.subTest(layout=layout, name=name), tempfile.TemporaryDirectory() as temporary:
                     work = Path(temporary)
                     if layout == "several":

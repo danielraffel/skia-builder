@@ -864,8 +864,10 @@ class SkiaBuildScript:
                     revision = line.split("=", 1)[1].strip()
         except OSError:
             pass
-        # A preview NDK reports "30.0.14904198-beta1": the pin is the numeric part.
-        if revision.split("-")[0] != ANDROID_NDK_REVISION:
+        # A preview NDK reports "30.0.14904198-beta1". Accept exactly the pinned
+        # revision and its known beta1 suffix, the same set the receipt checker
+        # (tools/write_ndk_toolchain_receipt.py PINNED_PKG_REVISIONS) accepts.
+        if revision not in (ANDROID_NDK_REVISION, f"{ANDROID_NDK_REVISION}-beta1"):
             colored_print(f"ANDROID_NDK_HOME={ndk!r} is NDK {revision or 'unknown'}, "
                           f"expected {ANDROID_NDK_REVISION}", Colors.FAIL)
             sys.exit(1)

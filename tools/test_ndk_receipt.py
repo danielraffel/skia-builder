@@ -181,5 +181,28 @@ class NdkReceiptTests(unittest.TestCase):
         self.assertEqual(ndk_tool.main([str(plain), "--archive", str(archive), "--check", *CELL_ARGS]), 1)
 
 
+class AndroidIsReleased(unittest.TestCase):
+    """The Android cells are built in the release matrix and published (a repair once dropped both)."""
+
+    ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+    def test_both_android_abis_are_release_matrix_cells(self):
+        import json
+        cells = json.loads((self.ROOT / "tools" / "skia_matrix.json").read_text())
+        android = sorted(c["arch"] for c in cells if c.get("platform") == "android" and not c.get("experimental"))
+        self.assertEqual(android, ["arm64-v8a", "x86_64"])
+
+    def test_create_release_publishes_both_android_archives(self):
+        workflow = (self.ROOT / ".github" / "workflows" / "build-skia.yml").read_text()
+        for abi in ("arm64-v8a", "x86_64"):
+            name = f"skia-build-android-{abi}-gpu-release"
+            self.assertIn(f"./{name}/{name}.zip", workflow)
+
+    def test_build_script_accepts_only_the_pinned_ndk_revisions(self):
+        script = (self.ROOT / "build-skia.py").read_text()
+        self.assertIn('revision not in (ANDROID_NDK_REVISION, f"{ANDROID_NDK_REVISION}-beta1")', script)
+        self.assertNotIn('revision.split("-")[0] != ANDROID_NDK_REVISION', script)
+
+
 if __name__ == "__main__":
     unittest.main()

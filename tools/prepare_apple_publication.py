@@ -77,16 +77,19 @@ def stage(root: Path, published_lock: Path, tag: str, asset: str,
     return [output / path.name for path in files]
 
 
-def check_destination(before: dict, asset: str, previous_sha256: str, desired_sha256: str) -> None:
-    if not re.fullmatch(r"[0-9a-f]{64}", previous_sha256):
+def check_destination(before: dict, asset: str, previous_sha256: str | None,
+                      desired_sha256: str) -> None:
+    if previous_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", previous_sha256):
         raise ValueError("expected previous digest must be 64 lowercase hex characters")
     current = next((item.get("digest") for item in before["assets"] if item["name"] == asset), None)
-    if current not in ("sha256:" + previous_sha256, "sha256:" + desired_sha256):
+    approved = (("sha256:" + previous_sha256, "sha256:" + desired_sha256)
+                if previous_sha256 is not None else (None, "sha256:" + desired_sha256))
+    if current not in approved:
         raise ValueError("destination archive differs from both approved prior and desired digests")
 
 
 def verify_published(before: dict, after: dict, staged: Path, asset: str, reason: str,
-                     previous_sha256: str) -> None:
+                     previous_sha256: str | None) -> None:
     """Prove expected bytes, preservation of unrelated assets, and replacement ledger."""
     from release_asset_guard import extract_ledger
 
@@ -106,7 +109,7 @@ def verify_published(before: dict, after: dict, staged: Path, asset: str, reason
             raise ValueError(f"unrelated asset changed or disappeared: {name}")
     if set(current) != set(original) | set(expected):
         raise ValueError("unexpected asset set after publication")
-    if "sha256:" + previous_sha256 != expected[asset]:
+    if previous_sha256 is not None and "sha256:" + previous_sha256 != expected[asset]:
         old_sha = previous_sha256
         new_sha = expected[asset].removeprefix("sha256:")
         if not any(asset in line and old_sha in line and new_sha in line and reason.strip() in line

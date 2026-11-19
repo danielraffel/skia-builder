@@ -109,7 +109,7 @@ jobs:
       - run: python3 tools/test_windows_arch_flags.py
       # Windows-only patch scripts must not change other platforms' archives.
       - run: python3 tools/test_patch_script_platforms.py
-      # Published assets are immutable unless deliberately replaced, and
+      # Published assets are immutable, and
       # Windows archives ship a provable toolchain receipt.
       - run: python3 tools/test_release_asset_guard.py
       - run: python3 tools/test_windows_toolchain_provenance.py

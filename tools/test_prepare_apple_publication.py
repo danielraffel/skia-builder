@@ -190,6 +190,15 @@ class PublishedProof(unittest.TestCase):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, "approved prior"):
                 pub.check_destination(self.before, self.asset, self.old, self.new)
 
+    def test_missing_asset_is_approved_for_immutable_backfill(self):
+        before = copy.deepcopy(self.before)
+        before["assets"].pop(0)
+        pub.check_destination(before, self.asset, None, self.new)
+
+    def test_changed_asset_is_rejected_without_replacement_input(self):
+        with self.assertRaisesRegex(ValueError, "differs from both approved"):
+            pub.check_destination(self.before, self.asset, None, self.new)
+
     def test_missing_or_changed_or_extra_assets_fail(self):
         baseline = copy.deepcopy(self.after)
         for change in ("missing", "digest", "id", "extra"):
@@ -228,6 +237,8 @@ class Workflow(unittest.TestCase):
         self.assertEqual(jobs["verify"]["permissions"]["contents"], "read")
         self.assertEqual(jobs["publish"]["permissions"], {"contents": "write"})
         self.assertEqual(jobs["publish"]["needs"], "verify")
+        trigger = workflow.get("on", workflow[True])
+        self.assertNotIn("previous_archive_sha256", trigger["workflow_dispatch"]["inputs"])
         downloads = [s for s in jobs["publish"]["steps"] if "actions/download-artifact@" in s.get("uses", "")]
         self.assertEqual(len(downloads), 1)
         self.assertNotIn("run-id", downloads[0]["with"])
@@ -240,6 +251,24 @@ class Workflow(unittest.TestCase):
         for job in jobs.values():
             for step in job["steps"]:
                 self.assertNotIn("${{ inputs.", step.get("run", ""))
+        publish = "\n".join(s.get("run", "") for s in jobs["publish"]["steps"])
+        self.assertNotIn("check_destination", publish)
+        self.assertIn("verify_published", publish)
+
+    def test_publication_proof_accepts_a_new_asset_without_replacement_ledger(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        staged = Path(tmp.name)
+        asset = pub.ASSETS[0]
+        (staged / asset).write_bytes(b"new archive")
+        (staged / "sidecar.json").write_bytes(b"record")
+        before = {"id": 1, "tag_name": "chrome/m158", "body": "release notes", "assets": []}
+        after = copy.deepcopy(before)
+        after["assets"] = [
+            {"id": 2, "name": asset, "digest": "sha256:" + pub.digest(staged / asset)},
+            {"id": 3, "name": "sidecar.json", "digest": "sha256:" + pub.digest(staged / "sidecar.json")},
+        ]
+        pub.verify_published(before, after, staged, asset, "", None)
 
 
 if __name__ == "__main__":

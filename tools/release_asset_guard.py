@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish release assets without silently replacing published bytes.
+"""Publish release assets without replacing published bytes.
 
 Consumers (Pulp's ``tools/deps/manifest.json``) pin every asset of a published
 release by sha256.  Re-uploading an asset with ``gh release upload --clobber``
@@ -11,11 +11,8 @@ the release:
 
 * asset absent                -> upload it (a new asset, nothing pinned yet)
 * asset present, same digest  -> skip it (an idempotent re-run is fine)
-* asset present, new digest   -> REFUSE, unless the asset is named in
-  ``--allow-replace`` with a ``--reason``.  A deliberate replacement prints the
-  old and new digests, re-reads the release to prove the new digest landed,
-  and appends a ledger line to the release notes so consumers can repin in the
-  same change.
+* asset present, new digest   -> REFUSE. Publish the corrected build under a
+  new release tag or asset name and update consumer pins in the same change.
 
 Every decision is made before the first upload, so a refusal leaves the
 release untouched.  ``--dry-run`` prints the plan and uploads nothing.
@@ -23,7 +20,6 @@ release untouched.  ``--dry-run`` prints the plan and uploads nothing.
 from __future__ import annotations
 
 import argparse
-import datetime as _dt
 import hashlib
 import json
 import os
@@ -39,7 +35,6 @@ LEDGER_TITLE = "### Asset replacements"
 
 UPLOAD = "upload"
 SKIP = "skip-identical"
-REPLACE = "replace"
 REFUSE = "refuse"
 DEFER = "defer-new"
 
@@ -73,18 +68,12 @@ def normalize_digest(value: str | None) -> str | None:
 
 
 def plan(local: dict[str, tuple[Path, str]], existing: dict[str, dict],
-         allow_replace: set[str], defer_new: bool = False) -> list[Action]:
+         defer_new: bool = False) -> list[Action]:
     """Decide what to do with each local file.  Pure: no network, no I/O.
 
     ``local`` maps asset name -> (path, sha256 hex).  ``existing`` maps asset
     name -> {"digest": hex, "id": int} for assets already on the release.
     """
-    unknown = sorted(allow_replace - set(local))
-    if unknown:
-        raise GuardError(
-            "--allow-replace names an asset that is not being published: "
-            + ", ".join(unknown)
-            + ". The override must name the exact asset file it is meant to replace.")
     actions = []
     for name in sorted(local):
         path, new = local[name]
@@ -95,12 +84,15 @@ def plan(local: dict[str, tuple[Path, str]], existing: dict[str, dict],
         old = current["digest"]
         if old == new:
             kind = SKIP
-        elif name in allow_replace:
-            kind = REPLACE
         else:
             kind = REFUSE
         actions.append(Action(name, path, kind, new, old, current.get("id")))
     return actions
+
+
+IMMUTABLE_MESSAGE = ("Published assets are immutable; publish the corrected build under "
+                     "a new release tag (or a new asset name) and update consumer pins "
+                     "in the same change. Nothing was uploaded.")
 
 
 def refusal_message(refused: list[Action], tag: str, repin_hint: str) -> str:
@@ -116,19 +108,11 @@ def refusal_message(refused: list[Action], tag: str, repin_hint: str) -> str:
         ]
     lines += [
         "",
-        "Published assets are pinned by digest downstream; replacing them in place",
-        "breaks every consumer that pinned the old bytes. Nothing was uploaded.",
+        IMMUTABLE_MESSAGE,
         "",
         "If this is an idempotent re-run you expected to be identical, the build is",
         "not byte-reproducible; keep the published asset and discard this one.",
         "",
-        "To replace deliberately, re-dispatch the workflow with:",
-    ]
-    for action in refused:
-        lines.append(f"  replace_asset={action.name}")
-    lines += [
-        "  replace_reason='<why the published bytes are wrong>'",
-        "The replacement prints both digests and records them in the release notes.",
     ]
     if repin_hint:
         lines += ["", "Then repin consumers in the same change:"]
@@ -136,17 +120,6 @@ def refusal_message(refused: list[Action], tag: str, repin_hint: str) -> str:
             lines.append("  " + repin_hint.format(
                 asset=action.name, old=action.old_digest, new=action.new_digest, tag=tag))
     return "\n".join(lines)
-
-
-def ledger_line(action: Action, reason: str, when: str, run_url: str, commit: str) -> str:
-    provenance = []
-    if run_url:
-        provenance.append(f"run {run_url}")
-    if commit:
-        provenance.append(f"commit {commit}")
-    tail = f" ({', '.join(provenance)})" if provenance else ""
-    return (f"- {when} `{action.name}` replaced: sha256 `{action.old_digest}` -> "
-            f"`{action.new_digest}`. Reason: {reason}{tail}")
 
 
 def extract_ledger(body: str) -> list[str]:
@@ -202,22 +175,9 @@ class Gh:
                       "--pattern", asset["name"], "--dir", tmp)
             return sha256_file(Path(tmp) / asset["name"])
 
-    def upload(self, tag: str, path: Path, clobber: bool) -> None:
+    def upload(self, tag: str, path: Path) -> None:
         args = ["release", "upload", tag, str(path), "--repo", self.repo]
-        if clobber:
-            args.append("--clobber")
         self._run(*args)
-
-    def set_body(self, release_id: int, body: str) -> None:
-        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
-                                         encoding="utf-8") as handle:
-            json.dump({"body": body}, handle)
-            payload = handle.name
-        try:
-            self._run("api", "--method", "PATCH", f"repos/{self.repo}/releases/{release_id}",
-                      "--input", payload)
-        finally:
-            os.unlink(payload)
 
 
 def existing_assets(gh: Gh, tag: str, release: dict | None) -> dict[str, dict]:
@@ -235,10 +195,8 @@ def _summary(text: str) -> None:
 
 
 def cmd_publish(args: argparse.Namespace) -> int:
-    allow = set(args.allow_replace or [])
-    allow.discard("")
-    if allow and not (args.reason or "").strip():
-        raise GuardError("--allow-replace requires --reason: say why the published bytes are wrong.")
+    if args.allow_replace or args.reason:
+        raise GuardError(IMMUTABLE_MESSAGE)
     local = {}
     for raw in args.files:
         path = Path(raw)
@@ -253,7 +211,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
     if release is None and not args.missing_release_ok:
         raise GuardError(f"release {args.tag!r} does not exist in {args.repo}; "
                          "a backfill must target an existing published release.")
-    actions = plan(local, existing_assets(gh, args.tag, release), allow, args.defer_new)
+    actions = plan(local, existing_assets(gh, args.tag, release), args.defer_new)
     for action in actions:
         old = f" published sha256:{action.old_digest}" if action.old_digest else ""
         print(f"release-asset-guard: {action.kind:<15} {action.name} "
@@ -270,40 +228,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
 
     for action in actions:
         if action.kind == UPLOAD:
-            gh.upload(args.tag, action.path, clobber=False)
-    replaced = [a for a in actions if a.kind == REPLACE]
-    for action in replaced:
-        print(f"release-asset-guard: REPLACING {action.name} on {args.tag}\n"
-              f"  old sha256:{action.old_digest}\n  new sha256:{action.new_digest}\n"
-              f"  reason: {args.reason}")
-        gh.upload(args.tag, action.path, clobber=True)
-
-    if replaced:
-        after = gh.release(args.tag) or {}
-        landed = existing_assets(gh, args.tag, after)
-        for action in replaced:
-            got = landed.get(action.name, {}).get("digest")
-            if got != action.new_digest:
-                raise GuardError(f"{action.name}: release now reports sha256:{got}, "
-                                 f"expected sha256:{action.new_digest}")
-        when = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        run_url = ""
-        if os.environ.get("GITHUB_RUN_ID"):
-            run_url = (f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/"
-                       f"{os.environ.get('GITHUB_REPOSITORY', args.repo)}/actions/runs/"
-                       f"{os.environ['GITHUB_RUN_ID']}")
-        new_lines = [ledger_line(a, args.reason.strip(), when, run_url,
-                                 os.environ.get("GITHUB_SHA", "")) for a in replaced]
-        body = after.get("body") or ""
-        gh.set_body(after["id"], with_ledger(body, extract_ledger(body) + new_lines))
-        summary = ["### Release asset replaced", ""] + new_lines
-        if args.repin_hint:
-            summary += ["", "Repin consumers:"] + [
-                "- " + args.repin_hint.format(asset=a.name, old=a.old_digest,
-                                              new=a.new_digest, tag=args.tag)
-                for a in replaced]
-        _summary("\n".join(summary))
-        print("\n".join(summary))
+            gh.upload(args.tag, action.path)
     return 0
 
 
@@ -330,8 +255,8 @@ def main(argv: list[str] | None = None) -> int:
     publish = sub.add_parser("publish", help="upload files under the immutability rules")
     publish.add_argument("files", nargs="+")
     publish.add_argument("--allow-replace", action="append", default=[],
-                         help="asset name whose published bytes may be replaced")
-    publish.add_argument("--reason", default="", help="required with --allow-replace")
+                         help="obsolete override; always refused because published assets are immutable")
+    publish.add_argument("--reason", default="", help=argparse.SUPPRESS)
     publish.add_argument("--dry-run", action="store_true")
     publish.add_argument("--missing-release-ok", action="store_true",
                          help="treat a missing release as empty (a new release is created later)")

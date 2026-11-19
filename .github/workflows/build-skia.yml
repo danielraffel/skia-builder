@@ -534,9 +534,10 @@ jobs:
       - name: Check Android archive links without BackupRefPtr
         if: steps.check.outputs.should_build == 'true' && matrix.platform == 'android' && !inputs.test_mode
         shell: bash
-        env:
-          NM: ${{ env.ANDROID_NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm
-        run: python3 tools/check_linux_archive.py "${{ steps.archive.outputs.name }}.zip"
+        run: |
+          : "${ANDROID_NDK_HOME:?ANDROID_NDK_HOME is not set}"
+          export NM="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
+          python3 tools/check_linux_archive.py "${{ steps.archive.outputs.name }}.zip"
 
       - name: Smoke-check Windows archive
         if: steps.check.outputs.should_build == 'true' && runner.os == 'Windows' && matrix.variant == 'gpu' && !inputs.test_mode

@@ -92,6 +92,21 @@ class NdkReceiptTests(unittest.TestCase):
         self.assertTrue(any("api_level 27 does not match pinned 26" in problem
                             for problem in problems), problems)
 
+    def test_a_different_pkg_revision_suffix_is_refused(self):
+        archive = self.archive()
+        receipt = self.receipt(archive)
+        receipt["ndk"]["pkg_revision"] = "30.0.14904198-evil"
+        problems = ndk_tool.validate_receipt(receipt, archive, **CELL)
+        self.assertTrue(any("pkg_revision" in problem and "pinned values" in problem
+                            for problem in problems), problems)
+
+    def test_a_compiler_target_for_another_abi_is_refused(self):
+        archive = self.archive()
+        receipt = self.receipt(archive)
+        receipt["compiler"]["target_triple"] = "x86_64-unknown-linux-android26"
+        problems = ndk_tool.validate_receipt(receipt, archive, **CELL)
+        self.assertTrue(any("compiler.target_triple" in problem for problem in problems), problems)
+
     def test_a_receipt_bound_to_other_bytes_is_refused(self):
         archive = self.archive()
         receipt = self.receipt(archive)

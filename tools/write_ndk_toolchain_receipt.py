@@ -46,6 +46,7 @@ LLVM_AR_RE = re.compile(r"(LLVM|llvm)")
 REVISION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 PKG_REVISION_RE = re.compile(r"^\d+\.\d+\.\d+(-[A-Za-z0-9.]+)?$")
 PINNED_NDK_REVISION = "30.0.14904198"
+PINNED_PKG_REVISIONS = frozenset((PINNED_NDK_REVISION, f"{PINNED_NDK_REVISION}-beta1"))
 PINNED_API_LEVEL = 26
 
 
@@ -163,14 +164,23 @@ def validate_receipt(receipt: dict, archive: Path, *, abi: str, configuration: s
         problems.append(f"ndk.revision {revision!r} does not match pinned {PINNED_NDK_REVISION}")
     if not PKG_REVISION_RE.match(pkg_revision):
         problems.append("ndk.pkg_revision is not a Pkg.Revision")
-    elif pkg_revision.split("-", 1)[0] != PINNED_NDK_REVISION:
-        problems.append(f"ndk.pkg_revision {pkg_revision!r} does not match pinned {PINNED_NDK_REVISION}")
+    elif pkg_revision not in PINNED_PKG_REVISIONS:
+        allowed = ", ".join(sorted(PINNED_PKG_REVISIONS))
+        problems.append(f"ndk.pkg_revision {pkg_revision!r} is not one of the pinned values: {allowed}")
     api_level = receipt.get("api_level")
     if not isinstance(api_level, int):
         problems.append("api_level is not an integer")
     elif api_level != PINNED_API_LEVEL:
         problems.append(f"api_level {api_level} does not match pinned {PINNED_API_LEVEL}")
     compiler = receipt.get("compiler") or {}
+    compiler_triple = str(compiler.get("target_triple", ""))
+    expected_triple = ABI_TRIPLE.get(abi, "")
+    accepted_triples = {
+        f"{expected_triple}{api_level}",
+        f"{expected_triple.split('-', 1)[0]}-unknown-linux-android{api_level}",
+    } if expected_triple and isinstance(api_level, int) else set()
+    if compiler_triple not in accepted_triples:
+        problems.append(f"compiler.target_triple {compiler_triple!r} is not a supported {abi} ABI triple at API {api_level}")
     versions: set[str] = set()
     for side in ("c", "cxx"):
         row = compiler.get(side) or {}

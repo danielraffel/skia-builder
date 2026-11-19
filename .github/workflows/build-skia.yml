@@ -498,11 +498,17 @@ jobs:
         if: steps.check.outputs.should_build == 'true' && inputs.test_mode
         shell: bash
         run: |
+          # Same directory the Package step selects: Android x86_64 stages in
+          # android-gpu-x86_64/, every other cell in <platform>-<variant>/.
+          DUMMY_DIR="build/${{ matrix.platform }}-${{ matrix.variant }}"
+          if [ "${{ matrix.platform }}" = android ] && [ "${{ matrix.arch }}" = x86_64 ]; then
+            DUMMY_DIR="${DUMMY_DIR}-x86_64"
+          fi
           mkdir -p build/include
-          mkdir -p build/${{ matrix.platform }}-${{ matrix.variant }}
+          mkdir -p "$DUMMY_DIR"
           echo "Test file" > build/include/test.h
-          echo "Test lib" > build/${{ matrix.platform }}-${{ matrix.variant }}/test.lib
-          echo "GN args summary" > build/${{ matrix.platform }}-${{ matrix.variant }}/gn_args.txt
+          echo "Test lib" > "$DUMMY_DIR/test.lib"
+          echo "GN args summary" > "$DUMMY_DIR/gn_args.txt"
 
       - name: Package binaries
         if: steps.check.outputs.should_build == 'true'

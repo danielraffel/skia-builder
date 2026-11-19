@@ -203,6 +203,17 @@ class AndroidIsReleased(unittest.TestCase):
         self.assertIn('revision not in (ANDROID_NDK_REVISION, f"{ANDROID_NDK_REVISION}-beta1")', script)
         self.assertNotIn('revision.split("-")[0] != ANDROID_NDK_REVISION', script)
 
+    def test_test_mode_stages_the_directory_packaging_selects(self):
+        workflow = (self.ROOT / ".github" / "workflows" / "build-skia.yml").read_text()
+        def step(name):
+            start = workflow.index(f"- name: {name}\n")
+            end = workflow.index("\n      - name:", start + 1)
+            return workflow[start:end]
+        for name in ("Create dummy files for test mode", "Package binaries"):
+            body = step(name)
+            self.assertIn('= android ] && [ "${{ matrix.arch }}" = x86_64 ]', body, name)
+            self.assertIn("-x86_64", body, name)
+
 
 if __name__ == "__main__":
     unittest.main()

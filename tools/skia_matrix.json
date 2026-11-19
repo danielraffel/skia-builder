@@ -11,7 +11,5 @@
   {"os": "windows-11-arm", "platform": "win", "selector": "win-arm64", "variant": "gpu", "arch": "arm64", "config": "Release"},
   {"os": "windows-11-arm", "platform": "win", "selector": "win-arm64ec", "variant": "gpu", "arch": "arm64ec", "config": "Release", "experimental": true},
   {"os": "ubuntu-latest", "platform": "wasm", "variant": "gpu", "arch": "wasm32", "config": "Release"},
-  {"os": "ubuntu-24.04-arm", "platform": "linux", "variant": "gpu", "arch": "arm64"},
-  {"os": "ubuntu-24.04", "platform": "android", "variant": "gpu", "arch": "arm64-v8a", "config": "Release"},
-  {"os": "ubuntu-24.04", "platform": "android", "variant": "gpu", "arch": "x86_64", "config": "Release"}
+  {"os": "ubuntu-24.04-arm", "platform": "linux", "variant": "gpu", "arch": "arm64"}
 ]

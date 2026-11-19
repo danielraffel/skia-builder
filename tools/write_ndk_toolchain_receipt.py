@@ -45,6 +45,8 @@ LLD_RE = re.compile(r"LLD \d+\.\d+")
 LLVM_AR_RE = re.compile(r"(LLVM|llvm)")
 REVISION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 PKG_REVISION_RE = re.compile(r"^\d+\.\d+\.\d+(-[A-Za-z0-9.]+)?$")
+PINNED_NDK_REVISION = "30.0.14904198"
+PINNED_API_LEVEL = 26
 
 
 def content_addressed_name(archive_name: str, data: bytes) -> str:
@@ -152,12 +154,22 @@ def validate_receipt(receipt: dict, archive: Path, *, abi: str, configuration: s
                                            "archiver", "cpp_abi")}, "")
     if receipt.get("schema") != SCHEMA:
         problems.append(f"schema = {receipt.get('schema')!r}")
-    if not REVISION_RE.match(str((receipt.get("ndk") or {}).get("revision", ""))):
+    ndk = receipt.get("ndk") or {}
+    revision = str(ndk.get("revision", ""))
+    pkg_revision = str(ndk.get("pkg_revision", ""))
+    if not REVISION_RE.match(revision):
         problems.append("ndk.revision is not a Pkg.Revision")
-    if not PKG_REVISION_RE.match(str((receipt.get("ndk") or {}).get("pkg_revision", ""))):
+    elif revision != PINNED_NDK_REVISION:
+        problems.append(f"ndk.revision {revision!r} does not match pinned {PINNED_NDK_REVISION}")
+    if not PKG_REVISION_RE.match(pkg_revision):
         problems.append("ndk.pkg_revision is not a Pkg.Revision")
-    if not isinstance(receipt.get("api_level"), int):
+    elif pkg_revision.split("-", 1)[0] != PINNED_NDK_REVISION:
+        problems.append(f"ndk.pkg_revision {pkg_revision!r} does not match pinned {PINNED_NDK_REVISION}")
+    api_level = receipt.get("api_level")
+    if not isinstance(api_level, int):
         problems.append("api_level is not an integer")
+    elif api_level != PINNED_API_LEVEL:
+        problems.append(f"api_level {api_level} does not match pinned {PINNED_API_LEVEL}")
     compiler = receipt.get("compiler") or {}
     versions: set[str] = set()
     for side in ("c", "cxx"):

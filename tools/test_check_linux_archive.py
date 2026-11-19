@@ -95,6 +95,17 @@ class AndroidTests(unittest.TestCase):
     def test_android_cpu_mapping(self) -> None:
         self.assertEqual(build_skia.ANDROID_ABI_CPU, {"arm64-v8a": "arm64", "x86_64": "x64"})
 
+    def test_android_multi_abi_outputs_use_distinct_library_directories(self) -> None:
+        script = build_skia.SkiaBuildScript.__new__(build_skia.SkiaBuildScript)
+        script.variant = "gpu"
+        script.archs = ["arm64-v8a", "x86_64"]
+        arm64 = script.get_lib_dir("android", "arm64-v8a")
+        x86_64 = script.get_lib_dir("android", "x86_64")
+        self.assertEqual(arm64.name, "lib")
+        self.assertEqual(arm64.parent.name, "android-gpu")
+        self.assertEqual(x86_64.parent.name, "android-gpu-x86_64")
+        self.assertNotEqual(arm64, x86_64)
+
 
 if __name__ == "__main__":
     unittest.main()

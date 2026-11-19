@@ -590,7 +590,7 @@ class SkiaBuildScript:
                 colored_print(f"Invalid architecture for {self.platform}: {arch}", Colors.FAIL)
                 sys.exit(1)
 
-    def get_lib_dir(self, platform):
+    def get_lib_dir(self, platform, arch=None):
         """Get the library directory for a platform, including variant suffix."""
         variant_suffix = f"-{self.variant}"
         if platform == "mac":
@@ -606,7 +606,8 @@ class SkiaBuildScript:
         elif platform == "android":
             # arm64-v8a is the canonical android-gpu/ (what Pulp's FindSkia
             # reads by default); x86_64 stages beside it in android-gpu-x86_64/.
-            abi = "-x86_64" if self.archs and self.archs[0] == "x86_64" else ""
+            selected_arch = arch if arch is not None else (self.archs[0] if self.archs else "")
+            abi = "-x86_64" if selected_arch == "x86_64" else ""
             return BASE_DIR / f"android{variant_suffix}{abi}" / "lib"
         else:  # Windows
             return BASE_DIR / f"win{variant_suffix}" / "lib"
@@ -911,7 +912,7 @@ class SkiaBuildScript:
 
     def move_libs(self, arch: str):
         src_dir = TMP_DIR / f"{self.platform}_{self.config}_{arch}_{self.variant}"
-        lib_dir = self.get_lib_dir(self.platform)
+        lib_dir = self.get_lib_dir(self.platform, arch)
         if self.platform == "mac":
             dest_dir = lib_dir / self.config / (arch if arch != "universal" else "")
         elif self.platform == "ios":

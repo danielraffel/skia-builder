@@ -75,6 +75,23 @@ class NdkReceiptTests(unittest.TestCase):
         (self.ndk / "source.properties").write_text("Pkg.Desc = x\n")
         self.assertTrue(ndk_tool.validate_receipt(self.receipt(archive), archive, **CELL))
 
+    def test_a_different_valid_ndk_revision_is_refused(self):
+        archive = self.archive()
+        receipt = self.receipt(archive)
+        receipt["ndk"]["revision"] = "29.0.13113456"
+        receipt["ndk"]["pkg_revision"] = "29.0.13113456"
+        problems = ndk_tool.validate_receipt(receipt, archive, **CELL)
+        self.assertTrue(any("does not match pinned" in problem for problem in problems), problems)
+
+    def test_a_different_api_level_is_refused(self):
+        archive = self.archive()
+        receipt = self.receipt(archive)
+        receipt["api_level"] = 27
+        receipt["observed"]["target_triple"] = "aarch64-linux-android27"
+        problems = ndk_tool.validate_receipt(receipt, archive, **CELL)
+        self.assertTrue(any("api_level 27 does not match pinned 26" in problem
+                            for problem in problems), problems)
+
     def test_a_receipt_bound_to_other_bytes_is_refused(self):
         archive = self.archive()
         receipt = self.receipt(archive)

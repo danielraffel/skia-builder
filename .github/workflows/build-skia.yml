@@ -1356,8 +1356,6 @@ jobs:
             ./skia-build-linux-x64-gpu-release/skia-build-linux-x64-gpu-release.zip
             ./skia-build-linux-arm64-gpu-release/skia-build-linux-arm64-gpu-release.zip
             ./skia-build-wasm-wasm32-gpu-release/skia-build-wasm-wasm32-gpu-release.zip
-            ./skia-build-android-arm64-v8a-gpu-release/skia-build-android-arm64-v8a-gpu-release.zip
-            ./skia-build-android-x86_64-gpu-release/skia-build-android-x86_64-gpu-release.zip
             ./Skia.xcframework/Skia.xcframework.zip
             ./skia-release-lock/skia-release-lock.json
             ./skia-build-*/provenance-assets/*.json
